@@ -76,11 +76,20 @@ jobs:
 
     - name: Generate Coverage Report
       run: |
-        # 1. Capture data (ignoring gcc 13 mismatches common in Jazzy/Noble)
-        lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
+        # 1. Capture data, tolerating gcc 13 line mismatches and unexecuted block noise
+        lcov \
+          --capture \
+          --directory build \
+          --output-file coverage.info \
+          --ignore-errors mismatch,gcov \
+          --rc geninfo_unexecuted_blocks=1
 
-        # 2. Remove system files, test files, and external dependencies
-        lcov --remove coverage.info '/usr/*' '*/test/*' '*/install/*' --output-file coverage_cleaned.info
+        # 2. Remove system files, test files, install space and gtest objects; ignore unused excludes
+        lcov \
+          --remove coverage.info \
+          '/usr/*' '*/test/*' '*/install/*' '*/gtest/*' \
+          --output-file coverage_cleaned.info \
+          --ignore-errors unused
 
         # 3. List summary for debugging logs
         lcov --list coverage_cleaned.info
