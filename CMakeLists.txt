@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(hector_testing_utils)
 
+option(ENABLE_COVERAGE_TESTING "Enable coverage reporting" OFF)
+
 # Default to C++17
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -16,28 +18,21 @@ find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 
 add_library(hector_testing_utils INTERFACE)
-target_include_directories(hector_testing_utils INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
+target_include_directories(
+  hector_testing_utils
+  INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>)
 
-ament_target_dependencies(hector_testing_utils INTERFACE
-  rclcpp
-  rclcpp_action
-)
+ament_target_dependencies(hector_testing_utils INTERFACE rclcpp rclcpp_action)
 
-install(TARGETS hector_testing_utils
-  EXPORT export_${PROJECT_NAME}
-)
+install(TARGETS hector_testing_utils EXPORT export_${PROJECT_NAME})
 
-install(DIRECTORY include/
-  DESTINATION include
-)
+install(DIRECTORY include/ DESTINATION include)
 
-install(DIRECTORY config launch
+install(
+  DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
-  OPTIONAL
-)
+  OPTIONAL)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -45,15 +40,49 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_hector_testing_utils test/test_hector_testing_utils.cpp)
   target_link_libraries(test_hector_testing_utils hector_testing_utils)
-  ament_target_dependencies(test_hector_testing_utils
-    rclcpp
-    rclcpp_action
-    example_interfaces
-    std_msgs
-  )
+  ament_target_dependencies(test_hector_testing_utils rclcpp rclcpp_action
+                            example_interfaces std_msgs)
   target_compile_definitions(
     test_hector_testing_utils
     PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_integration test/test_integration.cpp)
+  target_link_libraries(test_integration hector_testing_utils)
+  ament_target_dependencies(test_integration rclcpp rclcpp_action
+                            example_interfaces std_msgs)
+  target_compile_definitions(
+    test_integration PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_timing test/test_timing.cpp)
+  target_link_libraries(test_timing hector_testing_utils)
+  ament_target_dependencies(test_timing rclcpp std_msgs)
+
+  ament_add_gtest(test_context test/test_context.cpp)
+  target_link_libraries(test_context hector_testing_utils)
+  ament_target_dependencies(test_context rclcpp example_interfaces std_msgs)
+  target_compile_definitions(
+    test_context PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  if(ENABLE_COVERAGE_TESTING)
+    find_package(code_coverage QUIET)
+    if(code_coverage_FOUND)
+      include(CodeCoverage)
+      append_coverage_compiler_flags()
+      # Exclude build and test sources from the report
+      set(COVERAGE_EXCLUDES "${CMAKE_CURRENT_BINARY_DIR}/*" "*/test/*")
+      add_code_coverage(
+        NAME
+        ${PROJECT_NAME}_coverage
+        DEPENDENCIES
+        test_hector_testing_utils
+        test_integration
+        test_timing
+        test_context)
+    else()
+      message(WARNING "code_coverage package not found;
+          coverage target will not be generated")
+    endif()
+  endif()
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
