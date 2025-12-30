@@ -141,8 +141,9 @@ TEST_F( HectorTestFixture, CachedSubscriberReceivesMessage )
   const std::string topic = "/cached_subscriber_test";
   auto pub =
       tester_node_->create_publisher<std_msgs::msg::Int32>( topic, rclcpp::QoS( 5 ).best_effort() );
+  // Match publisher QoS to avoid reliability mismatches in CI
   hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( subscriber_node, topic,
-                                                                    rclcpp::QoS( 5 ) );
+                                                                    rclcpp::QoS( 5 ).best_effort() );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );
 
