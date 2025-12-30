@@ -3,6 +3,16 @@ project(hector_testing_utils)
 
 option(ENABLE_COVERAGE_TESTING "Enable coverage reporting" OFF)
 
+# --- MOVED BLOCK: MUST BE HERE ---
+if(ENABLE_COVERAGE_TESTING)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(--coverage)
+    add_link_options(--coverage)
+    message(STATUS "Coverage testing enabled for ${PROJECT_NAME}")
+  endif()
+endif()
+# ---------------------------------
+
 # Default to C++17
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -62,27 +72,6 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_context rclcpp example_interfaces std_msgs)
   target_compile_definitions(
     test_context PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
-
-  if(ENABLE_COVERAGE_TESTING)
-    find_package(code_coverage QUIET)
-    if(code_coverage_FOUND)
-      include(CodeCoverage)
-      append_coverage_compiler_flags()
-      # Exclude build and test sources from the report
-      set(COVERAGE_EXCLUDES "${CMAKE_CURRENT_BINARY_DIR}/*" "*/test/*")
-      add_code_coverage(
-        NAME
-        ${PROJECT_NAME}_coverage
-        DEPENDENCIES
-        test_hector_testing_utils
-        test_integration
-        test_timing
-        test_context)
-    else()
-      message(WARNING "code_coverage package not found;
-          coverage target will not be generated")
-    endif()
-  endif()
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
