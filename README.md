@@ -1,51 +1,78 @@
 # hector_testing_utils
 
+[![ROS2](https://img.shields.io/badge/ROS2-Jazzy%20|%20Rolling-blue)](https://docs.ros.org)
+![Lint](https://github.com/Joschi3/hector_testing_utils/actions/workflows/lint_build_test.yaml/badge.svg)
+[![codecov](https://codecov.io/gh/Joschi3/hector_testing_utils/graph/badge.svg?token=RYR8J8FNC8)](https://codecov.io/gh/Joschi3/hector_testing_utils)
+
+# hector_testing_utils
+
 Helper classes and functions for writing Google Tests that use the normal ROS 2 graph.
 
-These utilities are intentionally heavier than rtest. Compared to rtest, they are slower and more brittle.
-Prefer rtest for fast, deterministic unit tests.
-Use this package only when you must spin real nodes (for example: libraries that auto-create
-publishers/services, or tests that validate node-to-node interactions). Those tests are slower
-and more brittle, so keep them focused and timeboxed.
 
 ## What is included
 
 ### Core Components
 
-- **TestContext**: Manages a scoped ROS 2 context for test isolation
-- **TestExecutor**: Wraps a single-threaded executor with convenient helpers for spinning until conditions are met
-- **TestNode**: Enhanced node class with factory methods and connection tracking
-- **HectorTestFixture / HectorTestFixtureWithContext**: Google Test fixtures with pre-configured executor and test node
+* **TestContext**: Manages a scoped ROS 2 context for test isolation
+* **TestExecutor**: Wraps a single-threaded executor with convenient helpers for spinning until conditions are met
+* **TestNode**: Enhanced node class with factory methods and connection tracking
+* **HectorTestFixture / HectorTestFixtureWithContext**: Google Test fixtures with pre-configured executor and test node
 
 ### Connection-Aware Wrappers
 
-- **TestPublisher**: Publisher wrapper that tracks subscriber connections
-- **TestSubscription**: Subscription wrapper that caches messages and tracks publisher connections
-- **TestClient**: Service client wrapper with connection awareness
-- **TestServiceServer**: Service server wrapper that tracks client connections
-- **TestActionClient**: Action client wrapper with server readiness checking
-- **TestActionServer**: Action server wrapper that tracks client connections
-- **CachedSubscriber**: Standalone subscription wrapper for caching messages (backward compatible)
+* **TestPublisher**: Publisher wrapper that tracks subscriber connections
+* **TestSubscription**: Subscription wrapper that caches messages and tracks publisher connections
+* **TestClient**: Service client wrapper with connection awareness
+* **TestServiceServer**: Service server wrapper that tracks client connections
+* **TestActionClient**: Action client wrapper with server readiness checking
+* **TestActionServer**: Action server wrapper that tracks client connections
+* **CachedSubscriber**: Standalone subscription wrapper for caching messages (backward compatible)
 
 ### Wait Helpers
 
-- `wait_for_publishers`: Wait for publishers to appear on a topic
-- `wait_for_subscribers`: Wait for subscribers to appear on a topic
-- `wait_for_service`: Wait for a service to become available
-- `wait_for_action_server`: Wait for an action server to become available
-- `call_service`: Call a service with automatic waiting and timeout handling
-- `call_action`: Send an action goal with automatic waiting and result retrieval
+* `wait_for_publishers`: Wait for publishers to appear on a topic
+* `wait_for_subscribers`: Wait for subscribers to appear on a topic
+* `wait_for_service`: Wait for a service to become available
+* `wait_for_action_server`: Wait for an action server to become available
+* `wait_for_message`: Wait for a message, optionally with a predicate
+* `wait_for_new_message`: Wait for any new message after the current count
+* `call_service`: Call a service with automatic waiting and timeout handling
+* `call_action`: Send an action goal with automatic waiting and result retrieval
 
 ### Assertions & Macros
 
-- `ASSERT_SERVICE_EXISTS`: Assert that a service exists on the graph
-- `EXPECT_SERVICE_EXISTS`: Expect that a service exists on the graph
-- `ASSERT_ACTION_EXISTS`: Assert that an action server exists on the graph
-- `EXPECT_ACTION_EXISTS`: Expect that an action server exists on the graph
+* `ASSERT_SERVICE_EXISTS`: Assert that a service exists on the graph
+* `EXPECT_SERVICE_EXISTS`: Expect that a service exists on the graph
+* `ASSERT_ACTION_EXISTS`: Assert that an action server exists on the graph
+* `EXPECT_ACTION_EXISTS`: Expect that an action server exists on the graph
+* `ASSERT_SERVICE_EXISTS_WITH_EXECUTOR`: Assert service exists with custom executor
+* `EXPECT_SERVICE_EXISTS_WITH_EXECUTOR`: Expect service exists with custom executor
+* `ASSERT_ACTION_EXISTS_WITH_EXECUTOR`: Assert action exists with custom executor
+* `EXPECT_ACTION_EXISTS_WITH_EXECUTOR`: Expect action exists with custom executor
 
 ### Utility Functions
 
-- `node_options_from_yaml`: Load parameters from a YAML file into NodeOptions
+* `node_options_from_yaml`: Load parameters from a YAML file into NodeOptions
+
+
+## Comparison with [rtest](https://github.com/Beam-and-Spyrosoft/rtest)
+
+This package and **rtest** serve different purposes. Use the table below to decide which one fits your current testing needs.
+
+| Feature | **rtest** | **hector_testing_utils** |
+| --- | --- | --- |
+| **Test Type** | Unit Testing (Mocked) | Integration Testing (Real Graph) |
+| **Speed** | ⚡ **Instant** (No middleware overhead) | 🐢 **Slower** (Uses real DDS/RMW) |
+| **Determinism** | ✅ **100% Deterministic** (No race conditions) | ⚠️ **Variable** (Dependent on timing/OS) |
+| **Scope** | Internal Node Logic | Node-to-Node Communication |
+| **Middleware** | Bypassed (Mocks `rclcpp`) | Real (Uses actual `rclcpp` & DDS) |
+| **Best For** | CI pipelines, logic verification, fast feedback [if possible]|  Code using libraries that spawn internal entities, node-to-node interaction |
+
+### 💡 Recommendation
+
+* Prefer [rtest**](https://github.com/Beam-and-Spyrosoft/rtest) for the majority of your tests. It is significantly faster and more robust in CI environments because it mocks the ROS 2 communication layer, eliminating flaky tests caused by timing issues.
+* Use `hector_testing_utils**` only when you **must** spin real nodes (e.g., verifying that a launch file wires topics correctly, testing libraries that auto-create publishers/services, or validating complex node-to-node interactions). These tests are inherently slower and more brittle, so keep them focused and timeboxed.
+
 
 ## Basic Example
 
@@ -270,6 +297,13 @@ TEST_F(HectorTestFixture, PredicateWait)
 }
 ```
 
+You can also wait for any new message without a predicate:
+
+```cpp
+// Wait for the next message after current state
+ASSERT_TRUE(sub->wait_for_new_message(*executor_, 5s));
+```
+
 ## Latched/Transient Local Messages
 
 Test latched messages with transient local QoS:
@@ -397,6 +431,38 @@ TEST_F(HectorTestFixture, CustomSpinning)
 5. **Reset subscriptions**: Call `reset()` on subscriptions between test phases to clear cached messages
 6. **Check diagnostics**: Use the diagnostic report parameter to debug connection issues
 7. **Isolate contexts**: Use `HectorTestFixtureWithContext` when running tests in shared processes
+8. **Match QoS policies**: Ensure publishers and subscribers use compatible QoS settings (reliability, durability) to avoid silent connection failures
+9. **Use `wait_for_new_message()`**: When you need to wait for the next message regardless of content
+10. **Leverage timing helpers**: Use the built-in timing and sequencing helpers for robust, deterministic tests
+
+## Coverage Reporting
+
+Generate coverage reports locally:
+
+```bash
+# Build with coverage enabled
+colcon build --packages-select hector_testing_utils \
+  --cmake-args -DENABLE_COVERAGE_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+
+# Run tests
+colcon test --packages-select hector_testing_utils
+
+# Generate coverage report
+cd build/hector_testing_utils
+make hector_testing_utils_coverage
+
+# View HTML report
+xdg-open coverage_report/index.html
+```
+
+Or use the provided script:
+
+```bash
+cd /path/to/hector_testing_utils
+./generate_coverage.sh
+```
+
+The CI pipeline automatically generates coverage reports and uploads them to [Codecov](https://codecov.io/gh/Joschi3/hector_testing_utils).
 
 ## Running Tests
 
@@ -406,4 +472,15 @@ Build and run the tests:
 colcon build --packages-select hector_testing_utils
 colcon test --packages-select hector_testing_utils
 colcon test-result --verbose
+```
+
+View detailed test logs:
+
+```bash
+# Summary of all tests
+colcon test-result --verbose
+
+# Individual test logs
+less log/latest_test/hector_testing_utils/stdout.log
+less log/latest_test/hector_testing_utils/stderr.log
 ```
