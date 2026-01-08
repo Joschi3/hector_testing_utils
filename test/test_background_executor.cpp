@@ -1,8 +1,10 @@
+#include <example_interfaces/srv/add_two_ints.hpp>
 #include <gtest/gtest.h>
 #include <hector_testing_utils/hector_testing_utils.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 using hector_testing_utils::HectorTestFixture;
+using namespace std::chrono_literals;
 
 class BackgroundSpinnerTest : public HectorTestFixture
 {
@@ -17,16 +19,52 @@ TEST_F( BackgroundSpinnerTest, SpinsInBackground )
   auto timer = node->create_wall_timer( std::chrono::milliseconds( 10 ),
                                         [&callback_count]() { callback_count++; } );
 
-  // Start background spinning
+  // Verify that calling start multiple times is safe (idempotent)
+  executor_->start_background_spinner();
   executor_->start_background_spinner();
 
-  // Wait for some callbacks
+  // Wait for some callbacks to accumulate
   std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
 
-  // Stop spinning
+  // Verify that calling stop multiple times is safe
+  executor_->stop_background_spinner();
   executor_->stop_background_spinner();
 
   ASSERT_GT( callback_count, 0 );
+}
+
+TEST_F( BackgroundSpinnerTest, SpinSomeWhileBackgroundSpinning )
+{
+  executor_->start_background_spinner();
+  EXPECT_THROW( executor_->spin_some(), std::runtime_error );
+  executor_->stop_background_spinner();
+}
+
+TEST_F( BackgroundSpinnerTest, SpinUntilFutureCompleteWorks )
+{
+  auto node = std::make_shared<rclcpp::Node>( "spin_until_future_node" );
+  executor_->add_node( node );
+
+  auto client = node->create_client<example_interfaces::srv::AddTwoInts>( "add_two_ints" );
+  auto service = node->create_service<example_interfaces::srv::AddTwoInts>(
+      "add_two_ints", []( const std::shared_ptr<example_interfaces::srv::AddTwoInts::Request> req,
+                          std::shared_ptr<example_interfaces::srv::AddTwoInts::Response> res ) {
+        res->sum = req->a + req->b;
+      } );
+
+  executor_->start_background_spinner();
+
+  auto req = std::make_shared<example_interfaces::srv::AddTwoInts::Request>();
+  req->a = 5;
+  req->b = 7;
+
+  auto future = client->async_send_request( req );
+
+  // This should work even with background spinner (passive wait)
+  ASSERT_TRUE( executor_->spin_until_future_complete( future, 5s ) );
+  EXPECT_EQ( future.get()->sum, 12 );
+
+  executor_->stop_background_spinner();
 }
 
 TEST_F( BackgroundSpinnerTest, ScopedSpinnerWorks )

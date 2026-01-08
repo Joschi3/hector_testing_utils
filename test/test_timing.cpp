@@ -13,7 +13,7 @@
 using namespace std::chrono_literals;
 using hector_testing_utils::HectorTestFixture;
 
-// Test that timeouts work correctly when condition is not met
+// Test that timeouts work correctly when the wait condition is not met.
 TEST_F( HectorTestFixture, TimeoutWhenConditionNotMet )
 {
   const std::string topic = "/timeout_test";
@@ -21,6 +21,7 @@ TEST_F( HectorTestFixture, TimeoutWhenConditionNotMet )
   // Create a subscriber but no publisher
   auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>( topic );
 
+  // ... (rest of test)
   auto start = std::chrono::steady_clock::now();
   bool result = sub->wait_for_message( *executor_, 1s );
   auto duration = std::chrono::steady_clock::now() - start;
@@ -30,11 +31,11 @@ TEST_F( HectorTestFixture, TimeoutWhenConditionNotMet )
   EXPECT_LT( duration, 1500ms ); // But not too much longer
 }
 
-// Test that successful conditions return quickly
+// Test that successful conditions return immediately without waiting for the full timeout.
 TEST_F( HectorTestFixture, QuickReturnOnSuccess )
 {
   const std::string topic = "/quick_return_test";
-
+  // ...
   auto pub = tester_node_->create_test_publisher<std_msgs::msg::Int32>( topic );
   auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>( topic );
 
@@ -55,10 +56,11 @@ TEST_F( HectorTestFixture, QuickReturnOnSuccess )
   EXPECT_LT( duration, 1s );
 }
 
-// Test executor spin_until behavior
+// Test generic executor spin_until behavior with a custom predicate.
 TEST_F( HectorTestFixture, ExecutorSpinUntilBehavior )
 {
   int counter = 0;
+  // ...
 
   // Increment counter in a background thread
   std::thread increment_thread( [&counter]() {
@@ -81,6 +83,19 @@ TEST_F( HectorTestFixture, ExecutorSpinUntilBehavior )
   EXPECT_GE( counter, 3 );
   EXPECT_GE( duration, 600ms ); // Should take at least 600ms
   EXPECT_LT( duration, 1s );    // But return quickly after condition met
+}
+
+// Test that spin_until returns false if the predicate never becomes true within the timeout.
+TEST_F( HectorTestFixture, SpinUntilReturnsFalseOnTimeout )
+{
+  auto start = std::chrono::steady_clock::now();
+  // Predicate always returns false
+  bool result = executor_->spin_until( []() { return false; }, 200ms );
+  auto duration = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE( result );
+  EXPECT_GE( duration, 200ms );
+  EXPECT_LT( duration, 500ms ); // Should behave reasonably close to timeout
 }
 
 // Test wait_for_publishers with actual timing

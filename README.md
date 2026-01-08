@@ -519,8 +519,8 @@ xdg-open coverage_report/index.html
 Or use the provided script:
 
 ```bash
-cd /path/to/hector_testing_utils
-./generate_coverage.sh
+cd /path/to/ros2_workspace
+./src/hector_testing_utils/scripts/generate_coverage.sh
 ```
 
 The CI pipeline automatically generates coverage reports and uploads them to [Codecov](https://codecov.io/gh/Joschi3/hector_testing_utils).

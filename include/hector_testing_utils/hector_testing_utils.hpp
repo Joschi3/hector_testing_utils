@@ -17,6 +17,7 @@
 #include <rcutils/logging.h>
 
 #include <gtest/gtest.h>
+#include <rcl_interfaces/msg/log.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -32,9 +33,16 @@ constexpr std::chrono::seconds kDefaultTimeout{ 5 };
 // Context Helper
 // =============================================================================
 
+/// @brief Helper class to manage a dedicated ROS 2 context for testing.
+///
+/// This class handles the initialization and shutdown of a `rclcpp::Context`.
 class TestContext
 {
 public:
+  /// @brief Construct a new Test Context object
+  ///
+  /// @param argc Argument count for init
+  /// @param argv Argument vector for init
   explicit TestContext( int argc = 0, char **argv = nullptr )
   {
     context_ = std::make_shared<rclcpp::Context>();
@@ -43,6 +51,7 @@ public:
     context_->init( argc, argv, init_options );
   }
 
+  /// @brief Destroy the Test Context object and shutdown the context.
   ~TestContext()
   {
     if ( context_ && context_->is_valid() ) {
@@ -50,8 +59,10 @@ public:
     }
   }
 
+  /// @brief Get the shared pointer to the underlying rclcpp::Context.
   rclcpp::Context::SharedPtr context() const { return context_; }
 
+  /// @brief Get node options configured with this context.
   rclcpp::NodeOptions node_options() const
   {
     rclcpp::NodeOptions options;
@@ -67,9 +78,14 @@ private:
 // Executor Helper
 // =============================================================================
 
+/// @brief Helper class to manage a SingleThreadedExecutor for testing.
+///
+/// It supports both active spinning (driving the executor via `spin_until`) and
+/// passive waiting (if a background spinner is active).
 class TestExecutor
 {
 public:
+  /// @brief Construct a new Test Executor with a new context.
   TestExecutor() : context_( std::make_shared<rclcpp::Context>() )
   {
     rclcpp::InitOptions init_options;
@@ -79,12 +95,16 @@ public:
         make_executor_options( context_ ) );
   }
 
+  /// @brief Construct a new Test Executor with an existing context.
+  /// @param context The context to use.
   explicit TestExecutor( const rclcpp::Context::SharedPtr &context ) : context_( context )
   {
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(
         make_executor_options( context_ ) );
   }
 
+  /// @brief Construct a new Test Executor with an existing executor.
+  /// @param executor The executor to wrap.
   explicit TestExecutor( const std::shared_ptr<rclcpp::Executor> &executor )
       : context_( rclcpp::contexts::get_global_default_context() ), executor_( executor )
   {
@@ -92,9 +112,19 @@ public:
 
   ~TestExecutor() { stop_background_spinner(); }
 
+  /// @brief Add a node to the executor.
+  /// @param node The node to add.
   void add_node( const rclcpp::Node::SharedPtr &node ) { executor_->add_node( node ); }
 
-  // Spin until predicate is true
+  /// @brief Spin until the predicate returns true or timeout is reached.
+  ///
+  /// If a background spinner is active, this method simply waits (sleeps) until the predicate is true.
+  /// If no background spinner is active, this method calls `spin_some()` on the executor in a loop.
+  ///
+  /// @param predicate The condition to wait for.
+  /// @param timeout Maximum duration to wait.
+  /// @param spin_period Sleep duration between checks.
+  /// @return true if predicate became true, false on timeout or context shutdown.
   bool spin_until( const std::function<bool()> &predicate,
                    std::chrono::nanoseconds timeout = kDefaultTimeout,
                    std::chrono::nanoseconds spin_period = kDefaultSpinPeriod )
@@ -116,6 +146,14 @@ public:
     return false;
   }
 
+  /// @brief Wait until a future is complete or timeout is reached.
+  ///
+  /// Handles background spinning correctly by falling back to a predicate wait if needed.
+  ///
+  /// @tparam FutureT Type of the future.
+  /// @param future The future to wait for.
+  /// @param timeout Maximum duration to wait.
+  /// @return true if future completed successfully, false otherwise.
   template<typename FutureT>
   bool spin_until_future_complete( FutureT &future,
                                    std::chrono::nanoseconds timeout = kDefaultTimeout )
@@ -134,6 +172,8 @@ public:
     return result == rclcpp::FutureReturnCode::SUCCESS;
   }
 
+  /// @brief Execute any available work.
+  /// @throws std::runtime_error if background spinner is active.
   void spin_some()
   {
     if ( background_spinner_thread_.joinable() ) {
@@ -142,6 +182,9 @@ public:
     executor_->spin_some();
   }
 
+  /// @brief Start a background thread that continuously calls spin_some().
+  ///
+  /// This is useful for tests that need to wait for async events without manually calling spin().
   void start_background_spinner()
   {
     if ( background_spinner_thread_.joinable() ) {
@@ -157,6 +200,7 @@ public:
     } );
   }
 
+  /// @brief Stop the background spinner thread.
   void stop_background_spinner()
   {
     if ( background_spinner_thread_.joinable() ) {
@@ -166,7 +210,7 @@ public:
     }
   }
 
-  // RAII Helper for background spinning
+  /// @brief RAII Helper to start the background spinner on construction and stop it on destruction.
   struct ScopedSpinner {
     explicit ScopedSpinner( TestExecutor &exec ) : exec_( exec )
     {
@@ -195,20 +239,25 @@ private:
 // =============================================================================
 
 // Abstract base for anything that needs to "connect"
+/// @brief Interface for test objects that need to report connection status.
 class Connectable
 {
 public:
   virtual ~Connectable() = default;
+  /// @brief Check if the object is connected to its peer(s).
   virtual bool is_connected() const = 0;
+  /// @brief Get the name (topic/service/action name).
   virtual std::string get_name() const = 0;
+  /// @brief Get the type string (e.g. "Publisher").
   virtual std::string get_type() const = 0; // e.g., "Publisher", "Client"
 };
 
-/// Wrapper for Publisher
+/// @brief Wrapper for a ROS publisher to facilitate testing.
 template<typename MsgT>
 class TestPublisher : public Connectable
 {
 public:
+  /// @brief Construct a new Test Publisher object.
   TestPublisher( rclcpp::Node::SharedPtr node, const std::string &topic,
                  const rclcpp::QoS &qos = rclcpp::QoS( rclcpp::KeepLast( 10 ) ) )
       : topic_( topic )
@@ -216,13 +265,14 @@ public:
     pub_ = node->create_publisher<MsgT>( topic, qos );
   }
 
+  /// @brief Publish a message.
   void publish( const MsgT &msg ) { pub_->publish( msg ); }
 
   bool is_connected() const override { return pub_->get_subscription_count() > 0; }
   std::string get_name() const override { return topic_; }
   std::string get_type() const override { return "Publisher"; }
 
-  // Specific wait helper
+  /// @brief Wait until at least one subscription is connected.
   bool wait_for_subscription( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     return exec.spin_until( [this]() { return is_connected(); }, timeout );
@@ -233,11 +283,14 @@ private:
   std::string topic_;
 };
 
-/// Wrapper for Subscription
+/// @brief Wrapper for a ROS subscription to facilitate testing.
+///
+/// Handles message capture, counting, and provides wait utilities.
 template<class MsgT>
 class TestSubscription : public Connectable
 {
 public:
+  /// @brief Construct a new Test Subscription object.
   TestSubscription( const rclcpp::Node::SharedPtr &node, const std::string &topic,
                     const rclcpp::QoS &qos = rclcpp::QoS( rclcpp::KeepLast( 10 ) ),
                     bool latched = false )
@@ -259,6 +312,7 @@ public:
   std::string get_name() const override { return topic_; }
   std::string get_type() const override { return "Subscription"; }
 
+  /// @brief Clear captured messages and reset count.
   void reset()
   {
     std::lock_guard<std::mutex> lock( mutex_ );
@@ -266,24 +320,28 @@ public:
     message_count_ = 0;
   }
 
+  /// @brief Check if new messages arrived since a starting count.
   bool has_new_message( size_t start_count ) const
   {
     std::lock_guard<std::mutex> lock( mutex_ );
     return message_count_ > start_count;
   }
 
+  /// @brief Get the last received message.
   std::optional<MsgT> last_message() const
   {
     std::lock_guard<std::mutex> lock( mutex_ );
     return last_message_;
   }
 
+  /// @brief Get the total number of received messages.
   size_t message_count() const
   {
     std::lock_guard<std::mutex> lock( mutex_ );
     return message_count_;
   }
 
+  /// @brief Wait until at least 'count' publishers are connected.
   bool wait_for_publishers( TestExecutor &executor, size_t count = 1,
                             std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
@@ -291,7 +349,10 @@ public:
                                 timeout );
   }
 
-  // Test Helpers
+  /// @brief Wait for a message to arrive, optionally matching a predicate.
+  /// @param timeout Maximum wait time.
+  /// @param predicate Optional function to filter messages.
+  /// @return true if a matching message arrived, false on timeout.
   bool wait_for_message( TestExecutor &executor, std::chrono::nanoseconds timeout = kDefaultTimeout,
                          const std::function<bool( const MsgT & )> &predicate = nullptr )
   {
@@ -321,6 +382,7 @@ public:
         timeout );
   }
 
+  /// @brief Convenience wrapper for wait_for_message without predicate.
   bool wait_for_new_message( TestExecutor &executor,
                              std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
@@ -335,11 +397,12 @@ private:
   size_t message_count_{ 0 };
 };
 
-/// Wrapper for Service Client
+/// @brief Wrapper for a ROS service client to facilitate testing.
 template<typename ServiceT>
 class TestClient : public Connectable
 {
 public:
+  /// @brief Construct a new Test Client object.
   TestClient( rclcpp::Node::SharedPtr node, const std::string &service_name )
       : service_name_( service_name )
   {
@@ -350,8 +413,10 @@ public:
   std::string get_name() const override { return service_name_; }
   std::string get_type() const override { return "Service Client"; }
 
+  /// @brief Get the underlying ROS client.
   typename rclcpp::Client<ServiceT>::SharedPtr get() { return client_; }
 
+  /// @brief Wait for the service to be available.
   bool wait_for_service( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     // client->wait_for_service is blocking, so we use spin_until with non-blocking check
@@ -363,11 +428,12 @@ private:
   std::string service_name_;
 };
 
-/// Wrapper for Action Client
+/// @brief Wrapper for a ROS action client to facilitate testing.
 template<typename ActionT>
 class TestActionClient : public Connectable
 {
 public:
+  /// @brief Construct a new Test Action Client object.
   TestActionClient( rclcpp::Node::SharedPtr node, const std::string &action_name )
       : action_name_( action_name )
   {
@@ -378,8 +444,10 @@ public:
   std::string get_name() const override { return action_name_; }
   std::string get_type() const override { return "Action Client"; }
 
+  /// @brief Get the underlying ROS action client.
   typename rclcpp_action::Client<ActionT>::SharedPtr get() { return client_; }
 
+  /// @brief Wait for the action server to be available.
   bool wait_for_server( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     return exec.spin_until( [this]() { return client_->action_server_is_ready(); }, timeout );
@@ -390,7 +458,7 @@ private:
   std::string action_name_;
 };
 
-/// Wrapper for Service Server
+/// @brief Wrapper for a ROS service server to facilitate testing.
 template<typename ServiceT>
 class TestServiceServer : public Connectable
 {
@@ -398,6 +466,7 @@ public:
   using Callback = std::function<void( const std::shared_ptr<typename ServiceT::Request>,
                                        std::shared_ptr<typename ServiceT::Response> )>;
 
+  /// @brief Construct a new Test Service Server object.
   TestServiceServer( const rclcpp::Node::SharedPtr &node, const std::string &service_name,
                      const Callback &callback, const rclcpp::QoS &qos = rclcpp::ServicesQoS() )
       : node_( node ), service_name_( service_name )
@@ -409,11 +478,13 @@ public:
   std::string get_name() const override { return service_name_; }
   std::string get_type() const override { return "Service Server"; }
 
+  /// @brief Wait for at least one client to connect.
   bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     return exec.spin_until( [this]() { return is_connected(); }, timeout );
   }
 
+  /// @brief Get the underlying ROS service.
   typename rclcpp::Service<ServiceT>::SharedPtr get() { return service_; }
 
 private:
@@ -422,7 +493,7 @@ private:
   std::string service_name_;
 };
 
-/// Wrapper for Action Server
+/// @brief Wrapper for a ROS action server to facilitate testing.
 template<typename ActionT>
 class TestActionServer : public Connectable
 {
@@ -434,6 +505,7 @@ public:
       std::function<rclcpp_action::CancelResponse( const std::shared_ptr<GoalHandle> )>;
   using AcceptedCallback = std::function<void( const std::shared_ptr<GoalHandle> )>;
 
+  /// @brief Construct a new Test Action Server object.
   TestActionServer( const rclcpp::Node::SharedPtr &node, const std::string &action_name,
                     GoalCallback goal_cb, CancelCallback cancel_cb, AcceptedCallback accepted_cb )
       : node_( node ), action_name_( action_name )
@@ -452,11 +524,13 @@ public:
   std::string get_name() const override { return action_name_; }
   std::string get_type() const override { return "Action Server"; }
 
+  /// @brief Wait for at least one client to connect.
   bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     return exec.spin_until( [this]() { return is_connected(); }, timeout );
   }
 
+  /// @brief Get the underlying ROS action server.
   typename rclcpp_action::Server<ActionT>::SharedPtr get() { return server_; }
 
 private:
@@ -471,6 +545,10 @@ private:
 // The Main Testing Node
 // =============================================================================
 
+/// @brief Extended ROS 2 Node that provides factory methods for test wrappers.
+///
+/// This node allows creating wrapped publishers, subscribers, clients, and servers that
+/// automatically register themselves for connection monitoring.
 class TestNode : public rclcpp::Node
 {
 public:
@@ -489,6 +567,8 @@ public:
   }
 
   // Factory methods that register the objects
+
+  /// @brief Create a TestPublisher and register it.
   template<typename MsgT>
   std::shared_ptr<TestPublisher<MsgT>>
   create_test_publisher( const std::string &topic,
@@ -552,6 +632,16 @@ public:
   }
 
   // The main wait function
+
+  /// @brief Wait for all registered connectables to establish connections.
+  ///
+  /// Monitors all created test wrappers (publishers, subscribers, etc.) and waits until
+  /// their `is_connected()` returns true.
+  ///
+  /// @param executor The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param pending_report Optional pointer to string to receive pending connection details on failure.
+  /// @return true if all connected, false on timeout.
   bool wait_for_all_connections( TestExecutor &executor,
                                  std::chrono::seconds timeout = std::chrono::seconds( 10 ),
                                  std::string *pending_report = nullptr )
@@ -620,7 +710,13 @@ private:
 // Topic and Service/Action Helpers preserved for backward compatibility
 // =============================================================================
 
-/// Wait until the topic has at least min_publishers publishers.
+/// @brief Wait until the topic has at least min_publishers publishers.
+/// @param executor The executor to spin.
+/// @param node The node to use for counting.
+/// @param topic The topic name.
+/// @param min_publishers Minimum required publishers.
+/// @param timeout Maximum wait time.
+/// @return true if condition met, false on timeout.
 inline bool wait_for_publishers( TestExecutor &executor, const rclcpp::Node::SharedPtr &node,
                                  const std::string &topic, size_t min_publishers,
                                  std::chrono::nanoseconds timeout )
@@ -798,6 +894,10 @@ inline ::testing::AssertionResult assert_action_server_exists( TestExecutor &exe
 // Log Verification Helper
 // =============================================================================
 
+/// @brief Utility to capture and verify ROS log messages.
+///
+/// This class intercepts ROS 2 logging calls (via rcutils) and allows tests to assert that specific
+/// log messages have been published. It uses regex matching.
 class LogCapture
 {
 public:
@@ -807,6 +907,8 @@ public:
     std::string message;
   };
 
+  /// @brief Construct a new Log Capture object.
+  /// @throws std::runtime_error if another LogCapture instance already exists (singleton enforcement).
   LogCapture()
   {
     std::lock_guard<std::mutex> lock( mutex_ );
@@ -818,6 +920,7 @@ public:
     rcutils_logging_set_output_handler( &LogCapture::log_handler );
   }
 
+  /// @brief Destroy the Log Capture object and restore the previous log handler.
   ~LogCapture()
   {
     std::lock_guard<std::mutex> lock( mutex_ );
@@ -830,28 +933,37 @@ public:
   LogCapture( const LogCapture & ) = delete;
   LogCapture &operator=( const LogCapture & ) = delete;
 
-  // Wait for a log message matching the regex pattern
+  /// @brief Wait until a log message matching the regex pattern is captured.
+  /// @param executor Executor to spin (for timeout).
+  /// @param pattern_regex Regex pattern to look for.
+  /// @param timeout Maximum wait time.
+  /// @return true if found, false on timeout.
   bool wait_for_log( TestExecutor &executor, const std::string &pattern_regex,
                      std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
     std::regex re( pattern_regex );
-    return executor.spin_until(
-        [this, &re]() {
-          std::lock_guard<std::mutex> lock( mutex_ );
-          for ( const auto &log : captured_logs_ ) {
-            if ( std::regex_search( log.message, re ) ) {
-              return true;
-            }
-          }
-          return false;
-        },
-        timeout );
+    return executor.spin_until( [this, &re]() { return has_log( re ); }, timeout );
   }
 
-  // Check if a log message matching the regex pattern exists (non-blocking)
+  /// @brief Check if a log message matching the regex pattern has been captured.
+  /// @param pattern_regex Regex pattern.
+  /// @return true if found.
   bool has_log( const std::string &pattern_regex ) const
   {
     std::regex re( pattern_regex );
+    return has_log( re );
+  }
+
+  /// @brief Clear all captured logs.
+  void clear()
+  {
+    std::lock_guard<std::mutex> lock( mutex_ );
+    captured_logs_.clear();
+  }
+
+private:
+  bool has_log( const std::regex &re ) const
+  {
     std::lock_guard<std::mutex> lock( mutex_ );
     for ( const auto &log : captured_logs_ ) {
       if ( std::regex_search( log.message, re ) ) {
@@ -861,19 +973,10 @@ public:
     return false;
   }
 
-  // Clear captured logs
-  void clear()
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    captured_logs_.clear();
-  }
-
-private:
   static void log_handler( const rcutils_log_location_t *location, int severity, const char *name,
                            rcutils_time_point_value_t timestamp, const char *format, va_list *args )
   {
     char buffer[1024];
-    // Copy args because vsnprintf modifies them
     va_list args_copy;
     va_copy( args_copy, *args );
     vsnprintf( buffer, sizeof( buffer ), format, args_copy );
@@ -883,8 +986,6 @@ private:
       std::lock_guard<std::mutex> lock( mutex_ );
       if ( active_instance_ ) {
         active_instance_->captured_logs_.push_back( { severity, name ? name : "", buffer } );
-
-        // Use the previous handler to print to console
         if ( active_instance_->previous_handler_ ) {
           active_instance_->previous_handler_( location, severity, name, timestamp, format, args );
         }
@@ -918,8 +1019,7 @@ protected:
     // by overriding create_test_executor()
     std::shared_ptr<rclcpp::Executor> internal_exec = create_test_executor();
     if ( !internal_exec ) {
-      // Fallback if the user returns nullptr, though they shouldn't
-      internal_exec = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+      throw std::runtime_error( "create_test_executor() returned nullptr" );
     }
 
     executor_ = std::make_shared<TestExecutor>( internal_exec );

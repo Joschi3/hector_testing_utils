@@ -155,6 +155,85 @@ TEST_F( HectorTestFixture, TestSubscriptionReceivesMessage )
   auto last = sub.last_message();
   ASSERT_TRUE( last.has_value() );
   EXPECT_EQ( last->data, 42 );
+
+  std_msgs::msg::Int32 msg2;
+  msg2.data = 43;
+  pub->publish( msg2 );
+
+  ASSERT_TRUE( sub.wait_for_message( *executor_, 5s ) );
+  last = sub.last_message();
+  ASSERT_TRUE( last.has_value() );
+  EXPECT_EQ( last->data, 43 );
+}
+
+TEST_F( HectorTestFixture, CustomAsserts )
+{
+  auto node = std::make_shared<rclcpp::Node>( "assert_test_node" );
+  executor_->add_node( node );
+
+  auto service = node->create_service<example_interfaces::srv::AddTwoInts>(
+      "test_service", []( const std::shared_ptr<example_interfaces::srv::AddTwoInts::Request>,
+                          std::shared_ptr<example_interfaces::srv::AddTwoInts::Response> ) { } );
+
+  // Use the fixture's tester_node_ to check for the service, to simulate an external client
+  ASSERT_SERVICE_EXISTS( tester_node_, "/test_service", 2s );
+  ASSERT_SERVICE_EXISTS_WITH_EXECUTOR( *executor_, tester_node_, "/test_service", 2s );
+
+  // Note: Action asserts are trickier without a full action server setup, skipping to avoid bloat
+  // unless strictly required. The service logic covers the macro expansion pattern.
+}
+
+TEST_F( HectorTestFixture, WrapperGetters )
+{
+  const std::string topic = "/getter_test";
+  auto pub = tester_node_->create_test_publisher<std_msgs::msg::Int32>( topic );
+  auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>( topic );
+  auto client = tester_node_->create_test_client<example_interfaces::srv::AddTwoInts>( "test_srv" );
+
+  EXPECT_EQ( pub->get_name(), topic );
+  EXPECT_EQ( pub->get_type(), "Publisher" );
+
+  EXPECT_EQ( sub->get_name(), topic );
+  EXPECT_EQ( sub->get_type(), "Subscription" );
+
+  EXPECT_EQ( client->get_name(), "test_srv" );
+  EXPECT_EQ( client->get_type(), "Service Client" );
+
+  // Service Server
+  auto server = tester_node_->create_test_service_server<example_interfaces::srv::AddTwoInts>(
+      "test_srv_server", []( const std::shared_ptr<example_interfaces::srv::AddTwoInts::Request>,
+                             std::shared_ptr<example_interfaces::srv::AddTwoInts::Response> ) { } );
+  EXPECT_EQ( server->get_name(), "test_srv_server" );
+  EXPECT_EQ( server->get_type(), "Service Server" );
+
+  // Action Client
+  auto action_client = tester_node_->create_test_action_client<example_interfaces::action::Fibonacci>(
+      "test_action" );
+  EXPECT_EQ( action_client->get_name(), "test_action" );
+  EXPECT_EQ( action_client->get_type(), "Action Client" );
+
+  // Action Server
+  auto action_server = tester_node_->create_test_action_server<example_interfaces::action::Fibonacci>(
+      "test_action_server",
+      []( const rclcpp_action::GoalUUID &,
+          const std::shared_ptr<const example_interfaces::action::Fibonacci::Goal> ) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      []( const std::shared_ptr<rclcpp_action::ServerGoalHandle<example_interfaces::action::Fibonacci>> ) {
+        return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      []( const std::shared_ptr<rclcpp_action::ServerGoalHandle<example_interfaces::action::Fibonacci>> ) {
+      } );
+
+  EXPECT_EQ( action_server->get_name(), "test_action_server" );
+  EXPECT_EQ( action_server->get_type(), "Action Server" );
+}
+
+TEST_F( HectorTestFixture, TestContextOptions )
+{
+  // Just ensure we can call it and it has the core context attached
+  auto options = tester_node_->get_node_options();
+  EXPECT_NE( options.context(), nullptr );
 }
 
 TEST_F( HectorTestFixture, NodeOptionsFromYamlLoadsParameters )
