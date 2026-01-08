@@ -3,9 +3,13 @@
 ![Lint](https://github.com/Joschi3/hector_testing_utils/actions/workflows/lint_build_test.yaml/badge.svg)
 [![codecov](https://codecov.io/gh/Joschi3/hector_testing_utils/graph/badge.svg?token=RYR8J8FNC8)](https://codecov.io/gh/Joschi3/hector_testing_utils)
 
-**Compatibility:**
-* **ROS 2 Distributions**: Jazzy, Kilted, Rolling (Iron/Humble should work but are not actively CI tested)
-* **C++ Standard**: C++17 or later
+# hector_testing_utils
+
+**Helper classes and utilities for writing robust ROS 2 integration tests using the real ROS graph and middleware.**
+
+`hector_testing_utils` is designed for testing ROS 2 systems **where mocking rclcpp is not sufficient**.
+It enables deterministic, connection-aware Google Tests that interact with **actual DDS/RMW behavior**, while providing structured helpers to reduce flakiness.
+
 
 ## Table of Contents
 * [Comparison with rtest](#comparison-with-rtest)
@@ -15,12 +19,6 @@
 * [Advanced Usage](#advanced-executor-usage)
 * [Tips and Best Practices](#tips-and-best-practices)
 
-# hector_testing_utils
-
-**Helper classes and utilities for writing robust ROS 2 integration tests using the real ROS graph and middleware.**
-
-`hector_testing_utils` is designed for testing ROS 2 systems **where mocking rclcpp is not sufficient**.
-It enables deterministic, connection-aware Google Tests that interact with **actual DDS/RMW behavior**, while providing structured helpers to reduce flakiness.
 
 ## Comparison with [rtest](https://github.com/Beam-and-Spyrosoft/rtest)
 
@@ -41,6 +39,10 @@ While **rtest** is an excellent tool for unit testing, it is limited by its desi
 * **Use `hector_testing_utils`** when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries that manage their own ROS entities internally).
 
 ## Integration
+
+**Compatibility:**
+* **ROS 2 Distributions**: Jazzy, Kilted, Rolling (Iron/Humble should work but are not actively CI tested)
+* **C++ Standard**: C++17 or later
 
 To use `hector_testing_utils` in your ROS 2 package, add it as a test dependency.
 
