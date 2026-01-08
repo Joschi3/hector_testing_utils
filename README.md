@@ -1,9 +1,9 @@
-# hector_testing_utils
 
 [![ROS2](https://img.shields.io/badge/ROS2-Jazzy%20|%20Rolling-blue)](https://docs.ros.org)
 ![Lint](https://github.com/Joschi3/hector_testing_utils/actions/workflows/lint_build_test.yaml/badge.svg)
 [![codecov](https://codecov.io/gh/Joschi3/hector_testing_utils/graph/badge.svg?token=RYR8J8FNC8)](https://codecov.io/gh/Joschi3/hector_testing_utils)
 
+# hector_testing_utils
 
 Helper classes and functions for writing Google Tests that use the normal ROS 2 graph.
 
@@ -25,7 +25,7 @@ Helper classes and functions for writing Google Tests that use the normal ROS 2 
 * **TestServiceServer**: Service server wrapper that tracks client connections
 * **TestActionClient**: Action client wrapper with server readiness checking
 * **TestActionServer**: Action server wrapper that tracks client connections
-* **CachedSubscriber**: Standalone subscription wrapper for caching messages (backward compatible)
+
 
 ### Wait Helpers
 
@@ -83,7 +83,7 @@ This package and **rtest** serve different purposes. Use the table below to deci
 
 using namespace std::chrono_literals;
 
-TEST(Example, CachedSubscriber)
+TEST(Example, TestSubscription)
 {
   auto node = std::make_shared<rclcpp::Node>("example_node");
   hector_testing_utils::TestExecutor executor;
@@ -91,7 +91,7 @@ TEST(Example, CachedSubscriber)
 
   const std::string topic = "/example/int32";
   auto pub = node->create_publisher<std_msgs::msg::Int32>(topic, 10);
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub(node, topic);
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub(node, topic);
 
   ASSERT_TRUE(sub.wait_for_publishers(executor, 1, 5s));
 
@@ -398,28 +398,75 @@ EXPECT_EQ(result->code, rclcpp_action::ResultCode::SUCCEEDED);
 
 ## Advanced Executor Usage
 
-The `TestExecutor` provides flexible spinning options:
+ ### Custom Spinning
+ The `TestExecutor` provides flexible spinning options:
 
-```cpp
-TEST_F(HectorTestFixture, CustomSpinning)
-{
-  int counter = 0;
+ ```cpp
+ TEST_F(HectorTestFixture, CustomSpinning)
+ {
+   // Spin until a condition is met
+   bool result = executor_->spin_until(
+     [this]() { return some_condition(); },
+     5s
+   );
 
-  // Spin until a condition is met
-  bool result = executor_->spin_until(
-    [&counter]() { return counter >= 10; },
-    5s,  // timeout
-    10ms // spin period
-  );
+   // Spin until a future completes
+   auto future = client->async_send_request(request);
+   ASSERT_TRUE(executor_->spin_until_future_complete(future, 5s));
+ }
+ ```
 
-  // Spin until a future completes
-  auto future = client->async_send_request(request);
-  ASSERT_TRUE(executor_->spin_until_future_complete(future, 5s));
+ ### Background Spinning
 
-  // Just spin a few times
-  executor_->spin_some();
-}
-```
+ Sometimes, especially when testing launch files or complex node interactions, you need the "System Under Test" to run continuously in the background while your test code performs checks nicely.
+
+ Use `start_background_spinner()` to spawn a thread that spins the executor.
+
+ ```cpp
+ TEST_F(HectorTestFixture, BackgroundSpinning)
+ {
+   // Start spinning the nodes in a background thread
+   executor_->start_background_spinner();
+
+   // ... perform actions that require the system to be live ...
+
+   // Use wait helpers (they also work with background spinner active!)
+   ASSERT_TRUE(sub->wait_for_message(*executor_, 5s));
+
+   // Stop spinning before tearing down (optional, destructor does it too)
+   executor_->stop_background_spinner();
+ }
+ ```
+
+ > [!NOTE]
+ > `spin_until` and wait helpers automatically detect if the background spinner is active. If it is, they switch to "wait mode" (sleeping and checking predicate) instead of trying to spin the executor themselves.
+
+ ### Single vs Multi-Threaded Executor
+
+ By default, `HectorTestFixture` uses a `SingleThreadedExecutor`.
+
+ **Use `SingleThreadedExecutor` (Default) when:**
+ * You want deterministic, sequential execution.
+ * Your callbacks are fast and non-blocking.
+ * You want simpler debugging (no race conditions in your test nodes).
+
+ **Use `MultiThreadedExecutor` when:**
+ * You rely on Callback Groups for concurrent execution (e.g. Action Servers with parallel goal execution).
+ * You have blocking callbacks (bad practice, but happens).
+ * You want to simulate real deployment behavior more closely.
+
+ **How to override:**
+
+ ```cpp
+ class MyMultiThreadedTest : public hector_testing_utils::HectorTestFixture
+ {
+ protected:
+   std::shared_ptr<rclcpp::Executor> create_test_executor() override
+   {
+     return std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+   }
+ };
+ ```
 
 ## Tips and Best Practices
 
@@ -433,6 +480,21 @@ TEST_F(HectorTestFixture, CustomSpinning)
 8. **Match QoS policies**: Ensure publishers and subscribers use compatible QoS settings (reliability, durability) to avoid silent connection failures
 9. **Use `wait_for_new_message()`**: When you need to wait for the next message regardless of content
 10. **Leverage timing helpers**: Use the built-in timing and sequencing helpers for robust, deterministic tests
+
+### Testing Lifecycle Nodes
+
+When testing `LifecycleNodes`, remember that they do not automatically start. You must trigger their transitions:
+
+```cpp
+// Assuming 'my_node' is a LifecycleNode
+auto state = my_node->configure();
+ASSERT_EQ(state.id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+state = my_node->activate();
+ASSERT_EQ(state.id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+// Now your node is active and should be communicating
+```
 
 ## Coverage Reporting
 

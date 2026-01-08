@@ -57,7 +57,7 @@ TEST_F( HectorTestFixtureWithContext, MultipleNodesSharedContext )
   const std::string topic = "/context_test/multi_node";
 
   auto pub = node1->create_publisher<std_msgs::msg::Int32>( topic, 10 );
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( node2, topic );
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub( node2, topic );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );
 
@@ -242,8 +242,8 @@ TEST( TestExecutorWithContext, ExecutorConstruction )
   EXPECT_EQ( counter, 5 );
 }
 
-// Test CachedSubscriber with context
-TEST_F( HectorTestFixtureWithContext, CachedSubscriberWithContext )
+// Test TestSubscription with context
+TEST_F( HectorTestFixtureWithContext, TestSubscriptionWithContext )
 {
   auto sub_node = std::make_shared<rclcpp::Node>( "cached_sub_node", context_->node_options() );
   executor_->add_node( sub_node );
@@ -251,7 +251,7 @@ TEST_F( HectorTestFixtureWithContext, CachedSubscriberWithContext )
   const std::string topic = "/context_cached_sub";
 
   auto pub = tester_node_->create_publisher<std_msgs::msg::Int32>( topic, 10 );
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( sub_node, topic );
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub( sub_node, topic );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );
 

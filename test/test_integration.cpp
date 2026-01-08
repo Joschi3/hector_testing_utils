@@ -29,7 +29,7 @@ TEST_F( HectorTestFixture, MultiNodeCommunication )
   const std::string topic = "/multi_node/test_topic";
 
   auto pub = publisher_node->create_publisher<std_msgs::msg::String>( topic, 10 );
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::String> sub( subscriber_node, topic );
+  hector_testing_utils::TestSubscription<std_msgs::msg::String> sub( subscriber_node, topic );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );
 

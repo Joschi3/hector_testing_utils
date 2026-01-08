@@ -2,15 +2,19 @@
 #define HECTOR_TESTING_UTILS_HECTOR_TESTING_UTILS_HPP
 
 #include <chrono>
+#include <cstdarg>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <rcutils/logging.h>
 
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
@@ -66,13 +70,29 @@ private:
 class TestExecutor
 {
 public:
-  TestExecutor() = default;
-  explicit TestExecutor( const rclcpp::Context::SharedPtr &context )
-      : context_( context ), executor_( make_executor_options( context ) )
+  TestExecutor() : context_( std::make_shared<rclcpp::Context>() )
+  {
+    rclcpp::InitOptions init_options;
+    init_options.auto_initialize_logging( false );
+    context_->init( 0, nullptr, init_options );
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(
+        make_executor_options( context_ ) );
+  }
+
+  explicit TestExecutor( const rclcpp::Context::SharedPtr &context ) : context_( context )
+  {
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(
+        make_executor_options( context_ ) );
+  }
+
+  explicit TestExecutor( const std::shared_ptr<rclcpp::Executor> &executor )
+      : context_( rclcpp::contexts::get_global_default_context() ), executor_( executor )
   {
   }
 
-  void add_node( const rclcpp::Node::SharedPtr &node ) { executor_.add_node( node ); }
+  ~TestExecutor() { stop_background_spinner(); }
+
+  void add_node( const rclcpp::Node::SharedPtr &node ) { executor_->add_node( node ); }
 
   // Spin until predicate is true
   bool spin_until( const std::function<bool()> &predicate,
@@ -85,7 +105,12 @@ public:
         return true;
       if ( std::chrono::steady_clock::now() - start > timeout )
         return false;
-      executor_.spin_some();
+
+      // If background spinner is active, we just wait (passive mode).
+      // Otherwise, we drive the executor (active mode).
+      if ( !background_spinner_thread_.joinable() ) {
+        executor_->spin_some();
+      }
       std::this_thread::sleep_for( spin_period );
     }
     return false;
@@ -95,11 +120,61 @@ public:
   bool spin_until_future_complete( FutureT &future,
                                    std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    auto result = executor_.spin_until_future_complete( future, timeout );
+    // If background spinning is active, we can't use spin_until_future_complete because
+    // it tries to spin the executor which is already spinning.
+    // So we fall back to our predicate-based wait.
+    if ( background_spinner_thread_.joinable() ) {
+      return spin_until(
+          [&future]() {
+            return future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready;
+          },
+          timeout );
+    }
+    auto result = executor_->spin_until_future_complete( future, timeout );
     return result == rclcpp::FutureReturnCode::SUCCESS;
   }
 
-  void spin_some() { executor_.spin_some(); }
+  void spin_some()
+  {
+    if ( background_spinner_thread_.joinable() ) {
+      throw std::runtime_error( "Cannot call spin_some() while background spinner is active!" );
+    }
+    executor_->spin_some();
+  }
+
+  void start_background_spinner()
+  {
+    if ( background_spinner_thread_.joinable() ) {
+      return; // Already spinning
+    }
+    stop_signal_ = false;
+    background_spinner_thread_ = std::thread( [this]() {
+      while ( rclcpp::ok( context_ ) && !stop_signal_ ) {
+        executor_->spin_some();
+        // Small sleep to yield if spin_some returns immediately (no work)
+        std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+      }
+    } );
+  }
+
+  void stop_background_spinner()
+  {
+    if ( background_spinner_thread_.joinable() ) {
+      stop_signal_ = true;
+      executor_->cancel();
+      background_spinner_thread_.join();
+    }
+  }
+
+  // RAII Helper for background spinning
+  struct ScopedSpinner {
+    explicit ScopedSpinner( TestExecutor &exec ) : exec_( exec )
+    {
+      exec_.start_background_spinner();
+    }
+    ~ScopedSpinner() { exec_.stop_background_spinner(); }
+    TestExecutor &exec_;
+  };
 
 private:
   static rclcpp::ExecutorOptions make_executor_options( const rclcpp::Context::SharedPtr &context )
@@ -110,7 +185,9 @@ private:
   }
 
   rclcpp::Context::SharedPtr context_;
-  rclcpp::executors::SingleThreadedExecutor executor_;
+  std::shared_ptr<rclcpp::Executor> executor_;
+  std::thread background_spinner_thread_;
+  std::atomic<bool> stop_signal_{ false };
 };
 
 // =============================================================================
@@ -199,6 +276,19 @@ public:
   {
     std::lock_guard<std::mutex> lock( mutex_ );
     return last_message_;
+  }
+
+  size_t message_count() const
+  {
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return message_count_;
+  }
+
+  bool wait_for_publishers( TestExecutor &executor, size_t count = 1,
+                            std::chrono::nanoseconds timeout = kDefaultTimeout )
+  {
+    return executor.spin_until( [this, count]() { return sub_->get_publisher_count() >= count; },
+                                timeout );
   }
 
   // Test Helpers
@@ -501,6 +591,13 @@ public:
         },
         timeout );
 
+    if ( !ok && pending_report == nullptr ) {
+      // If no report pointer was provided, log the failure details here
+      const auto disconnected_names = collect_disconnected();
+      RCLCPP_ERROR( this->get_logger(), "Timeout waiting for connections! %s",
+                    format_pending( disconnected_names ).c_str() );
+    }
+
     if ( pending_report ) {
       if ( ok ) {
         pending_report->clear();
@@ -522,105 +619,6 @@ private:
 // =============================================================================
 // Topic and Service/Action Helpers preserved for backward compatibility
 // =============================================================================
-
-/// Subscription wrapper that caches the last message and message count.
-template<class MsgT>
-class CachedSubscriber
-{
-public:
-  CachedSubscriber( const rclcpp::Node::SharedPtr &node, const std::string &topic,
-                    const rclcpp::QoS &qos = rclcpp::QoS( rclcpp::KeepLast( 10 ) ),
-                    bool latched = false )
-  {
-    rclcpp::QoS resolved_qos = qos;
-    if ( latched ) {
-      resolved_qos.durability( RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL );
-    }
-    sub_ = node->create_subscription<MsgT>(
-        topic, resolved_qos, [this]( const std::shared_ptr<MsgT> msg ) { on_message( msg ); } );
-  }
-
-  /// Clear cached data.
-  void reset()
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    last_message_.reset();
-    message_count_ = 0;
-  }
-
-  bool has_message() const
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    return last_message_.has_value();
-  }
-
-  /// Return a copy of the last message (if any).
-  std::optional<MsgT> last_message() const
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    return last_message_;
-  }
-
-  size_t message_count() const
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    return message_count_;
-  }
-
-  /// Wait for a new message that optionally satisfies a predicate.
-  bool wait_for_message( TestExecutor &executor, std::chrono::nanoseconds timeout,
-                         const std::function<bool( const MsgT & )> &predicate = nullptr )
-  {
-    size_t start_count = 0;
-    {
-      std::lock_guard<std::mutex> lock( mutex_ );
-      start_count = message_count_;
-    }
-
-    return executor.spin_until(
-        [this, start_count, &predicate]() {
-          std::optional<MsgT> msg;
-          size_t count = 0;
-          {
-            std::lock_guard<std::mutex> lock( mutex_ );
-            count = message_count_;
-            if ( count <= start_count || !last_message_ ) {
-              return false;
-            }
-            msg = last_message_;
-          }
-          if ( predicate ) {
-            return predicate( *msg );
-          }
-          return true;
-        },
-        timeout );
-  }
-
-  /// Wait until at least min_publishers are connected.
-  bool wait_for_publishers( TestExecutor &executor, size_t min_publishers,
-                            std::chrono::nanoseconds timeout )
-  {
-    return executor.spin_until(
-        [this, min_publishers]() { return sub_ && sub_->get_publisher_count() >= min_publishers; },
-        timeout );
-  }
-
-  bool is_connected() const { return sub_ && sub_->get_publisher_count() > 0; }
-
-private:
-  void on_message( const std::shared_ptr<MsgT> msg )
-  {
-    std::lock_guard<std::mutex> lock( mutex_ );
-    last_message_ = *msg;
-    ++message_count_;
-  }
-
-  std::shared_ptr<rclcpp::Subscription<MsgT>> sub_;
-  mutable std::mutex mutex_;
-  std::optional<MsgT> last_message_;
-  size_t message_count_{ 0 };
-};
 
 /// Wait until the topic has at least min_publishers publishers.
 inline bool wait_for_publishers( TestExecutor &executor, const rclcpp::Node::SharedPtr &node,
@@ -797,6 +795,114 @@ inline ::testing::AssertionResult assert_action_server_exists( TestExecutor &exe
       executor, node, action, std::chrono::duration_cast<std::chrono::nanoseconds>( timeout ) ) )
 
 // =============================================================================
+// Log Verification Helper
+// =============================================================================
+
+class LogCapture
+{
+public:
+  struct LogMessage {
+    int severity;
+    std::string name;
+    std::string message;
+  };
+
+  LogCapture()
+  {
+    std::lock_guard<std::mutex> lock( mutex_ );
+    if ( active_instance_ ) {
+      throw std::runtime_error( "Only one LogCapture instance can be active at a time!" );
+    }
+    active_instance_ = this;
+    previous_handler_ = rcutils_logging_get_output_handler();
+    rcutils_logging_set_output_handler( &LogCapture::log_handler );
+  }
+
+  ~LogCapture()
+  {
+    std::lock_guard<std::mutex> lock( mutex_ );
+    if ( active_instance_ == this ) {
+      rcutils_logging_set_output_handler( previous_handler_ );
+      active_instance_ = nullptr;
+    }
+  }
+
+  LogCapture( const LogCapture & ) = delete;
+  LogCapture &operator=( const LogCapture & ) = delete;
+
+  // Wait for a log message matching the regex pattern
+  bool wait_for_log( TestExecutor &executor, const std::string &pattern_regex,
+                     std::chrono::nanoseconds timeout = kDefaultTimeout )
+  {
+    std::regex re( pattern_regex );
+    return executor.spin_until(
+        [this, &re]() {
+          std::lock_guard<std::mutex> lock( mutex_ );
+          for ( const auto &log : captured_logs_ ) {
+            if ( std::regex_search( log.message, re ) ) {
+              return true;
+            }
+          }
+          return false;
+        },
+        timeout );
+  }
+
+  // Check if a log message matching the regex pattern exists (non-blocking)
+  bool has_log( const std::string &pattern_regex ) const
+  {
+    std::regex re( pattern_regex );
+    std::lock_guard<std::mutex> lock( mutex_ );
+    for ( const auto &log : captured_logs_ ) {
+      if ( std::regex_search( log.message, re ) ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Clear captured logs
+  void clear()
+  {
+    std::lock_guard<std::mutex> lock( mutex_ );
+    captured_logs_.clear();
+  }
+
+private:
+  static void log_handler( const rcutils_log_location_t *location, int severity, const char *name,
+                           rcutils_time_point_value_t timestamp, const char *format, va_list *args )
+  {
+    char buffer[1024];
+    // Copy args because vsnprintf modifies them
+    va_list args_copy;
+    va_copy( args_copy, *args );
+    vsnprintf( buffer, sizeof( buffer ), format, args_copy );
+    va_end( args_copy );
+
+    {
+      std::lock_guard<std::mutex> lock( mutex_ );
+      if ( active_instance_ ) {
+        active_instance_->captured_logs_.push_back( { severity, name ? name : "", buffer } );
+
+        // Use the previous handler to print to console
+        if ( active_instance_->previous_handler_ ) {
+          active_instance_->previous_handler_( location, severity, name, timestamp, format, args );
+        }
+      }
+    }
+  }
+
+  static LogCapture *active_instance_;
+  static std::mutex mutex_;
+  rcutils_logging_output_handler_t previous_handler_;
+  std::vector<LogMessage> captured_logs_;
+};
+
+// Static inline definitions (C++17)
+inline LogCapture *LogCapture::active_instance_ = nullptr;
+inline std::mutex LogCapture::mutex_;
+
+// =============================================================================
 // Fixture Update
 // =============================================================================
 
@@ -808,7 +914,16 @@ protected:
     if ( !rclcpp::ok() ) {
       rclcpp::init( 0, nullptr );
     }
-    executor_ = std::make_shared<TestExecutor>();
+    // Allow derived classes to provide a custom executor (e.g. MultiThreaded)
+    // by overriding create_test_executor()
+    std::shared_ptr<rclcpp::Executor> internal_exec = create_test_executor();
+    if ( !internal_exec ) {
+      // Fallback if the user returns nullptr, though they shouldn't
+      internal_exec = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    }
+
+    executor_ = std::make_shared<TestExecutor>( internal_exec );
+
     // Instantiate our new smart TestNode
     tester_node_ = std::make_shared<TestNode>( "hector_tester_node" );
     executor_->add_node( tester_node_ );
@@ -819,6 +934,12 @@ protected:
     if ( rclcpp::ok() ) {
       rclcpp::shutdown();
     }
+  }
+
+  // Virtual method to allow overriding the executor type definition
+  virtual std::shared_ptr<rclcpp::Executor> create_test_executor()
+  {
+    return std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   }
 
   std::shared_ptr<TestExecutor> executor_;

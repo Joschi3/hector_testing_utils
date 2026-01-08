@@ -133,7 +133,7 @@ TEST_F( HectorTestFixture, ActionClientServerWaitsForConnections )
   EXPECT_EQ( wrapped.result->sequence.back(), 3 );
 }
 
-TEST_F( HectorTestFixture, CachedSubscriberReceivesMessage )
+TEST_F( HectorTestFixture, TestSubscriptionReceivesMessage )
 {
   auto subscriber_node = std::make_shared<rclcpp::Node>( "cached_subscriber_test_node" );
   executor_->add_node( subscriber_node );
@@ -142,7 +142,7 @@ TEST_F( HectorTestFixture, CachedSubscriberReceivesMessage )
   auto pub =
       tester_node_->create_publisher<std_msgs::msg::Int32>( topic, rclcpp::QoS( 5 ).best_effort() );
   // Match publisher QoS to avoid reliability mismatches in CI
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( subscriber_node, topic,
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub( subscriber_node, topic,
                                                                     rclcpp::QoS( 5 ).best_effort() );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );

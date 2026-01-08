@@ -91,7 +91,7 @@ TEST_F( HectorTestFixture, WaitForPublishersTiming )
   auto sub_node = std::make_shared<rclcpp::Node>( "subscriber_timing_node" );
   executor_->add_node( sub_node );
 
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( sub_node, topic );
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub( sub_node, topic );
 
   // Start thread that creates publisher after delay
   std::thread delayed_pub( [this, topic]() {
@@ -210,7 +210,7 @@ TEST_F( HectorTestFixture, PredicateEvaluationDuringWait )
   EXPECT_LT( duration, 1500ms );
 }
 
-// Test CachedSubscriber message count increments correctly
+// Test TestSubscription message count increments correctly
 TEST_F( HectorTestFixture, MessageCountIncrement )
 {
   const std::string topic = "/message_count_test";
@@ -219,7 +219,7 @@ TEST_F( HectorTestFixture, MessageCountIncrement )
   executor_->add_node( sub_node );
 
   auto pub = tester_node_->create_publisher<std_msgs::msg::Int32>( topic, 10 );
-  hector_testing_utils::CachedSubscriber<std_msgs::msg::Int32> sub( sub_node, topic );
+  hector_testing_utils::TestSubscription<std_msgs::msg::Int32> sub( sub_node, topic );
 
   ASSERT_TRUE( sub.wait_for_publishers( *executor_, 1, 5s ) );
 

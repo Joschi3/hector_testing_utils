@@ -72,6 +72,22 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_context rclcpp example_interfaces std_msgs)
   target_compile_definitions(
     test_context PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_log_capture test/test_log_capture.cpp)
+  target_link_libraries(test_log_capture hector_testing_utils)
+  ament_target_dependencies(test_log_capture rclcpp)
+
+  ament_add_gtest(test_background_executor test/test_background_executor.cpp)
+  target_link_libraries(test_background_executor hector_testing_utils)
+  ament_target_dependencies(test_background_executor rclcpp std_msgs
+                            example_interfaces)
+  target_compile_definitions(
+    test_background_executor
+    PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_executor_types test/test_executor_types.cpp)
+  target_link_libraries(test_executor_types hector_testing_utils)
+  ament_target_dependencies(test_executor_types rclcpp)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
