@@ -12,9 +12,9 @@ Helper classes and functions for writing Google Tests that use the normal ROS 2 
 
 ### Core Components
 
+* **TestExecutor**: Wraps an executor with convenient helpers for spinning until conditions are met
+* **TestNode**: Enhanced node class with factory methods and connection tracking (e.g. wait until all entities are connected)
 * **TestContext**: Manages a scoped ROS 2 context for test isolation
-* **TestExecutor**: Wraps a single-threaded executor with convenient helpers for spinning until conditions are met
-* **TestNode**: Enhanced node class with factory methods and connection tracking
 * **HectorTestFixture / HectorTestFixtureWithContext**: Google Test fixtures with pre-configured executor and test node
 
 ### Connection-Aware Wrappers
@@ -37,6 +37,7 @@ Helper classes and functions for writing Google Tests that use the normal ROS 2 
 * `wait_for_new_message`: Wait for any new message after the current count
 * `call_service`: Call a service with automatic waiting and timeout handling
 * `call_action`: Send an action goal with automatic waiting and result retrieval
+* `wait_for_all_connections`: Wait for all entities to be connected
 
 ### Assertions & Macros
 
@@ -71,7 +72,7 @@ While **rtest** is an excellent tool for unit testing, it is limited by its desi
 **Summary:**
 
 * **Use `rtest**` whenever possible for instant, flake-free feedback on logic.
-* **Use `hector_testing_utils**` when `rtest` is too restrictive (e.g., testing launch files, complex node interactions, or opaque libraries).
+* **Use `hector_testing_utils**` when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries).
 
 
 ## Basic Example
