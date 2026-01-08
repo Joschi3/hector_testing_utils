@@ -71,8 +71,8 @@ While **rtest** is an excellent tool for unit testing, it is limited by its desi
 
 **Summary:**
 
-* **Use `rtest**` whenever possible for instant, flake-free feedback on logic.
-* **Use `hector_testing_utils**` when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries).
+* **Use `rtest`** whenever possible for instant, flake-free feedback on logic.
+* **Use `hector_testing_utils`** when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries that manage their own ROS entities internally).
 
 
 ## Basic Example
