@@ -1,5 +1,5 @@
 
-[![ROS2](https://img.shields.io/badge/ROS2-Jazzy%20|%20Rolling-blue)](https://docs.ros.org)
+[![ROS2](https://img.shields.io/badge/ROS2-Jazzy%20|%20Kilted%20|%20Rolling-blue)](https://docs.ros.org)
 ![Lint](https://github.com/Joschi3/hector_testing_utils/actions/workflows/lint_build_test.yaml/badge.svg)
 [![codecov](https://codecov.io/gh/Joschi3/hector_testing_utils/graph/badge.svg?token=RYR8J8FNC8)](https://codecov.io/gh/Joschi3/hector_testing_utils)
 
