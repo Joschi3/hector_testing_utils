@@ -3,10 +3,62 @@
 ![Lint](https://github.com/Joschi3/hector_testing_utils/actions/workflows/lint_build_test.yaml/badge.svg)
 [![codecov](https://codecov.io/gh/Joschi3/hector_testing_utils/graph/badge.svg?token=RYR8J8FNC8)](https://codecov.io/gh/Joschi3/hector_testing_utils)
 
+**Compatibility:**
+* **ROS 2 Distributions**: Jazzy, Kilted, Rolling (Iron/Humble should work but are not actively CI tested)
+* **C++ Standard**: C++17 or later
+
+## Table of Contents
+* [Comparison with rtest](#comparison-with-rtest)
+* [Integration](#integration)
+* [Core Components](#core-components)
+* [Basic Example](#basic-example)
+* [Advanced Usage](#advanced-executor-usage)
+* [Tips and Best Practices](#tips-and-best-practices)
+
 # hector_testing_utils
 
-Helper classes and functions for writing Google Tests that use the normal ROS 2 graph.
+**Helper classes and utilities for writing robust ROS 2 integration tests using the real ROS graph and middleware.**
 
+`hector_testing_utils` is designed for testing ROS 2 systems **where mocking rclcpp is not sufficient**.
+It enables deterministic, connection-aware Google Tests that interact with **actual DDS/RMW behavior**, while providing structured helpers to reduce flakiness.
+
+## Comparison with [rtest](https://github.com/Beam-and-Spyrosoft/rtest)
+
+While **rtest** is an excellent tool for unit testing, it is limited by its design: it mocks `rclcpp` entirely. This makes it fast but unusable for code that relies on real middleware behavior or external libraries that manage their own ROS entities.
+
+**hector_testing_utils** is designed to fill that gap. It provides a stable environment for the "general cases" where mocking isn't an option, aiming to make real integration tests as robust as possible.
+
+| Feature | rtest | hector_testing_utils |
+| --- | --- | --- |
+| **Middleware** | **Mocked** (No DDS) | **Real** (Actual DDS/RMW) |
+| **Execution Speed** | ⚡ Instant | 🐢 Slower |
+| **Scope** | Unit Logic Only | Full Integration |
+| **Limitations** | Cannot test complex library interactions | Subject to OS scheduling/timing |
+
+**Summary:**
+
+* **Use `rtest`** whenever possible for instant, flake-free feedback on logic, or single node ros2 communication
+* **Use `hector_testing_utils`** when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries that manage their own ROS entities internally).
+
+## Integration
+
+To use `hector_testing_utils` in your ROS 2 package, add it as a test dependency.
+
+**package.xml**:
+```xml
+<test_depend>hector_testing_utils</test_depend>
+```
+
+**CMakeLists.txt**:
+```cmake
+if(BUILD_TESTING)
+  find_package(hector_testing_utils REQUIRED)
+
+  ament_add_gtest(my_integration_test test/my_integration_test.cpp)
+
+  ament_target_dependencies(my_integration_test rclcpp hector_testing_utils)
+endif()
+```
 
 ## What is included
 
@@ -53,26 +105,7 @@ Helper classes and functions for writing Google Tests that use the normal ROS 2 
 ### Utility Functions
 
 * `node_options_from_yaml`: Load parameters from a YAML file into NodeOptions
-* **LogCapture**: Helper to verify ROS log messages (singleton)
-
-
-## Comparison with [rtest](https://github.com/Beam-and-Spyrosoft/rtest)
-
-While **rtest** is an excellent tool for unit testing, it is limited by its design: it mocks `rclcpp` entirely. This makes it fast but unusable for code that relies on real middleware behavior or external libraries that manage their own ROS entities.
-
-**hector_testing_utils** is designed to fill that gap. It provides a stable environment for the "general cases" where mocking isn't an option, aiming to make real integration tests as robust as possible.
-
-| Feature | rtest | hector_testing_utils |
-| --- | --- | --- |
-| **Middleware** | **Mocked** (No DDS) | **Real** (Actual DDS/RMW) |
-| **Execution Speed** | ⚡ Instant | 🐢 Slower |
-| **Scope** | Unit Logic Only | Full Integration |
-| **Limitations** | Cannot test complex library interactions | Subject to OS scheduling/timing |
-
-**Summary:**
-
-* **Use `rtest`** whenever possible for instant, flake-free feedback on logic.
-* **Use `hector_testing_utils`** when `rtest` is too restrictive (e.g. complex node interactions, or opaque libraries that manage their own ROS entities internally).
+* `LogCapture`: Helper to verify ROS log messages (singleton)
 
 
 ## Basic Example
@@ -499,6 +532,7 @@ EXPECT_EQ(result->code, rclcpp_action::ResultCode::SUCCEEDED);
 8. **Match QoS policies**: Ensure publishers and subscribers use compatible QoS settings (reliability, durability) to avoid silent connection failures
 9. **Use `wait_for_new_message()`**: When you need to wait for the next message regardless of content
 10. **Leverage timing helpers**: Use the built-in timing and sequencing helpers for robust, deterministic tests
+11. **Domain ID Isolation**: When running tests in parallel on the same machine, ensure your test fixture handles Domain ID isolation if you are not using `TestContext` (which attempts to handle this). `hector_testing_utils` attempts to generate unique Domain IDs, but be aware of shared DDS limits.
 
 ### Testing Lifecycle Nodes
 
@@ -515,7 +549,37 @@ ASSERT_EQ(state.id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
 // Now your node is active and should be communicating
 ```
 
-## Coverage Reporting
+## Contributing
+
+PRs are welcome! Please ensure that:
+
+* New features include a corresponding test case in `test/`.
+* `colcon test` passes locally.
+* pre-commit checks pass (`pre-commit run --all-files`)
+
+
+### Running Tests
+
+Build and run the tests:
+
+```bash
+colcon build --packages-select hector_testing_utils
+colcon test --packages-select hector_testing_utils
+colcon test-result --verbose
+```
+
+View detailed test logs:
+
+```bash
+# Summary of all tests
+colcon test-result --verbose
+
+# Individual test logs
+less log/latest_test/hector_testing_utils/stdout.log
+less log/latest_test/hector_testing_utils/stderr.log
+```
+
+### Coverage Reporting
 
 Generate coverage reports locally:
 
@@ -543,24 +607,3 @@ cd /path/to/ros2_workspace
 ```
 
 The CI pipeline automatically generates coverage reports and uploads them to [Codecov](https://codecov.io/gh/Joschi3/hector_testing_utils).
-
-## Running Tests
-
-Build and run the tests:
-
-```bash
-colcon build --packages-select hector_testing_utils
-colcon test --packages-select hector_testing_utils
-colcon test-result --verbose
-```
-
-View detailed test logs:
-
-```bash
-# Summary of all tests
-colcon test-result --verbose
-
-# Individual test logs
-less log/latest_test/hector_testing_utils/stdout.log
-less log/latest_test/hector_testing_utils/stderr.log
-```
