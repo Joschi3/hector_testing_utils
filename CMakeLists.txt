@@ -89,6 +89,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_executor_types hector_testing_utils)
   ament_target_dependencies(test_executor_types rclcpp)
 
+  ament_add_gtest(test_graph_suggestions test/test_graph_suggestions.cpp)
+  target_link_libraries(test_graph_suggestions hector_testing_utils)
+  ament_target_dependencies(test_graph_suggestions rclcpp rclcpp_action
+                            example_interfaces std_msgs)
+
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

@@ -1,12 +1,15 @@
 #ifndef HECTOR_TESTING_UTILS_HECTOR_TESTING_UTILS_HPP
 #define HECTOR_TESTING_UTILS_HECTOR_TESTING_UTILS_HPP
 
+#include <algorithm>
 #include <chrono>
 #include <cstdarg>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -28,6 +31,458 @@ using namespace std::chrono_literals;
 
 constexpr std::chrono::milliseconds kDefaultSpinPeriod{ 5 };
 constexpr std::chrono::seconds kDefaultTimeout{ 5 };
+constexpr size_t kDefaultMaxSuggestions{ 10 };
+
+// =============================================================================
+// Graph Introspection Types
+// =============================================================================
+
+/// @brief Represents an entity (topic, service, or action) in the ROS graph with its types.
+struct GraphEntity {
+  std::string name;               ///< The fully-qualified name (e.g., "/my_topic")
+  std::vector<std::string> types; ///< The message/service/action types
+};
+
+/// @brief Represents a suggestion for a similar entity with a similarity score.
+struct Suggestion {
+  std::string name;               ///< The name of the similar entity
+  std::vector<std::string> types; ///< The types of the similar entity
+  double similarity_score;        ///< Similarity score (0.0 = no match, 1.0 = exact match)
+
+  /// @brief Compare suggestions by similarity score (descending order).
+  bool operator<( const Suggestion &other ) const
+  {
+    return similarity_score > other.similarity_score; // Higher score = better match
+  }
+};
+
+/// @brief Result of a wait operation that failed due to timeout.
+struct WaitFailureInfo {
+  std::string searched_name;           ///< The name that was searched for
+  std::string searched_type;           ///< The type that was searched for (if applicable)
+  std::string entity_kind;             ///< Kind of entity: "topic", "service", "action"
+  std::vector<Suggestion> suggestions; ///< Similar entities sorted by similarity
+
+  /// @brief Format the failure info as a human-readable string.
+  /// @param max_suggestions Maximum number of suggestions to include (0 = unlimited)
+  [[nodiscard]] std::string format( size_t max_suggestions = 0 ) const
+  {
+    std::stringstream ss;
+    ss << "Failed to find " << entity_kind << " '" << searched_name << "'";
+    if ( !searched_type.empty() ) {
+      ss << " (type: " << searched_type << ")";
+    }
+    ss << "\n";
+
+    if ( suggestions.empty() ) {
+      ss << "  No similar " << entity_kind << "s found in the graph.\n";
+    } else {
+      const size_t num_to_show = ( max_suggestions > 0 )
+                                     ? std::min( max_suggestions, suggestions.size() )
+                                     : suggestions.size();
+      const bool truncated = ( max_suggestions > 0 ) && ( suggestions.size() > max_suggestions );
+
+      ss << "  Available " << entity_kind << "s (sorted by similarity):\n";
+      for ( size_t i = 0; i < num_to_show; ++i ) {
+        const auto &suggestion = suggestions[i];
+        ss << "    - " << suggestion.name;
+        if ( !suggestion.types.empty() ) {
+          ss << " [";
+          for ( size_t j = 0; j < suggestion.types.size(); ++j ) {
+            if ( j > 0 )
+              ss << ", ";
+            ss << suggestion.types[j];
+          }
+          ss << "]";
+        }
+        ss << " (score: " << std::fixed << std::setprecision( 2 ) << suggestion.similarity_score
+           << ")\n";
+      }
+      if ( truncated ) {
+        ss << "    ... and " << ( suggestions.size() - max_suggestions ) << " more.\n";
+      }
+    }
+    return ss.str();
+  }
+};
+
+// =============================================================================
+// String Similarity Utilities
+// =============================================================================
+
+namespace detail
+{
+
+/// @brief Compute the Levenshtein edit distance between two strings.
+///
+/// This is a classic dynamic programming algorithm for computing the minimum
+/// number of single-character edits (insertions, deletions, substitutions)
+/// required to transform one string into another.
+///
+/// @param s1 First string
+/// @param s2 Second string
+/// @return The edit distance (0 means identical strings)
+inline size_t levenshtein_distance( const std::string &s1, const std::string &s2 )
+{
+  const size_t m = s1.size();
+  const size_t n = s2.size();
+
+  if ( m == 0 )
+    return n;
+  if ( n == 0 )
+    return m;
+
+  // Use two rows instead of full matrix for space efficiency
+  std::vector<size_t> prev_row( n + 1 );
+  std::vector<size_t> curr_row( n + 1 );
+
+  // Initialize first row
+  std::iota( prev_row.begin(), prev_row.end(), 0 );
+
+  for ( size_t i = 1; i <= m; ++i ) {
+    curr_row[0] = i;
+    for ( size_t j = 1; j <= n; ++j ) {
+      const size_t cost = ( s1[i - 1] == s2[j - 1] ) ? 0 : 1;
+      curr_row[j] = std::min( {
+          prev_row[j] + 1,       // deletion
+          curr_row[j - 1] + 1,   // insertion
+          prev_row[j - 1] + cost // substitution
+      } );
+    }
+    std::swap( prev_row, curr_row );
+  }
+
+  return prev_row[n];
+}
+
+/// @brief Convert Levenshtein distance to a similarity score in [0, 1].
+///
+/// @param s1 First string
+/// @param s2 Second string
+/// @return Similarity score (1.0 = identical, 0.0 = completely different)
+inline double string_similarity( const std::string &s1, const std::string &s2 )
+{
+  if ( s1.empty() && s2.empty() )
+    return 1.0;
+
+  const size_t max_len = std::max( s1.size(), s2.size() );
+  const size_t distance = levenshtein_distance( s1, s2 );
+
+  return 1.0 - static_cast<double>( distance ) / static_cast<double>( max_len );
+}
+
+/// @brief Check if a string contains another string as a substring (case-insensitive).
+inline bool contains_substring_ci( const std::string &haystack, const std::string &needle )
+{
+  if ( needle.empty() )
+    return true;
+  if ( haystack.empty() )
+    return false;
+
+  std::string haystack_lower = haystack;
+  std::string needle_lower = needle;
+  std::transform( haystack_lower.begin(), haystack_lower.end(), haystack_lower.begin(), ::tolower );
+  std::transform( needle_lower.begin(), needle_lower.end(), needle_lower.begin(), ::tolower );
+
+  return haystack_lower.find( needle_lower ) != std::string::npos;
+}
+
+/// @brief Extract the base name from a fully-qualified name (removes leading slashes and namespace).
+inline std::string extract_base_name( const std::string &full_name )
+{
+  auto pos = full_name.rfind( '/' );
+  if ( pos != std::string::npos && pos + 1 < full_name.size() ) {
+    return full_name.substr( pos + 1 );
+  }
+  return full_name;
+}
+
+/// @brief Compute a composite similarity score considering multiple factors.
+///
+/// This function considers:
+/// - Full name similarity (Levenshtein-based)
+/// - Base name similarity (ignoring namespace)
+/// - Substring matching (bonus if one contains the other)
+/// - Type matching (bonus if types overlap)
+///
+/// @param searched_name The name being searched for
+/// @param candidate_name The candidate name to compare
+/// @param searched_types The types being searched for (may be empty)
+/// @param candidate_types The candidate's types
+/// @return A composite similarity score in [0, 1]
+inline double compute_similarity( const std::string &searched_name, const std::string &candidate_name,
+                                  const std::vector<std::string> &searched_types,
+                                  const std::vector<std::string> &candidate_types )
+{
+  // Base similarity from Levenshtein distance on full names
+  double full_name_sim = string_similarity( searched_name, candidate_name );
+
+  // Also compare base names (last component after final '/')
+  std::string searched_base = extract_base_name( searched_name );
+  std::string candidate_base = extract_base_name( candidate_name );
+  double base_name_sim = string_similarity( searched_base, candidate_base );
+
+  // Start with weighted combination of full and base name similarities
+  double score = 0.6 * full_name_sim + 0.4 * base_name_sim;
+
+  // Bonus for substring matching
+  if ( contains_substring_ci( candidate_name, searched_name ) ||
+       contains_substring_ci( searched_name, candidate_name ) ) {
+    score = std::min( 1.0, score + 0.15 );
+  }
+
+  // Bonus for type matching
+  if ( !searched_types.empty() && !candidate_types.empty() ) {
+    for ( const auto &st : searched_types ) {
+      for ( const auto &ct : candidate_types ) {
+        if ( st == ct ) {
+          score = std::min( 1.0, score + 0.2 );
+          goto type_bonus_applied; // Only apply once
+        }
+        // Partial type matching (e.g., same message type, different package)
+        std::string st_base = extract_base_name( st );
+        std::string ct_base = extract_base_name( ct );
+        if ( !st_base.empty() && st_base == ct_base ) {
+          score = std::min( 1.0, score + 0.1 );
+          goto type_bonus_applied;
+        }
+      }
+    }
+  type_bonus_applied:;
+  }
+
+  return score;
+}
+
+/// @brief Helper to get the type name for a ROS message type.
+///
+/// Uses rosidl_generator_traits::name() for messages and services.
+/// For action types, constructs the name from the Goal type.
+template<typename T, typename = void>
+struct type_name_helper {
+  static std::string get() { return rosidl_generator_traits::name<T>(); }
+};
+
+/// @brief Specialization for action types (detected by presence of Goal typedef).
+template<typename T>
+struct type_name_helper<T, std::void_t<typename T::Goal>> {
+  static std::string get()
+  {
+    // Action goal type name is like "example_interfaces/action/Fibonacci_Goal"
+    // We want "example_interfaces/action/Fibonacci"
+    std::string goal_name = rosidl_generator_traits::name<typename T::Goal>();
+    const std::string suffix = "_Goal";
+    if ( goal_name.size() > suffix.size() &&
+         goal_name.compare( goal_name.size() - suffix.size(), suffix.size(), suffix ) == 0 ) {
+      return goal_name.substr( 0, goal_name.size() - suffix.size() );
+    }
+    return goal_name;
+  }
+};
+
+/// @brief Get the type name for any ROS interface type (message, service, or action).
+template<typename T>
+std::string get_type_name()
+{
+  return type_name_helper<T>::get();
+}
+
+} // namespace detail
+
+// =============================================================================
+// Graph Introspection Functions
+// =============================================================================
+
+/// @brief Collect all available topics from the ROS graph.
+///
+/// @param node The node to use for graph introspection
+/// @return Vector of GraphEntity containing topic names and their message types
+inline std::vector<GraphEntity> collect_available_topics( const rclcpp::Node::SharedPtr &node )
+{
+  std::vector<GraphEntity> topics;
+  auto topic_map = node->get_topic_names_and_types();
+
+  topics.reserve( topic_map.size() );
+  for ( const auto &[name, types] : topic_map ) { topics.push_back( { name, types } ); }
+
+  return topics;
+}
+
+/// @brief Collect all available services from the ROS graph.
+///
+/// @param node The node to use for graph introspection
+/// @return Vector of GraphEntity containing service names and their types
+inline std::vector<GraphEntity> collect_available_services( const rclcpp::Node::SharedPtr &node )
+{
+  std::vector<GraphEntity> services;
+  auto service_map = node->get_service_names_and_types();
+
+  services.reserve( service_map.size() );
+  for ( const auto &[name, types] : service_map ) { services.push_back( { name, types } ); }
+
+  return services;
+}
+
+/// @brief Collect all available actions from the ROS graph.
+///
+/// Actions are identified by looking for topics that end with "/_action/status",
+/// which every action server publishes.
+///
+/// @param node The node to use for graph introspection
+/// @return Vector of GraphEntity containing action names and their types
+inline std::vector<GraphEntity> collect_available_actions( const rclcpp::Node::SharedPtr &node )
+{
+  std::vector<GraphEntity> actions;
+  auto topic_map = node->get_topic_names_and_types();
+
+  const std::string status_suffix = "/_action/status";
+
+  for ( const auto &[name, types] : topic_map ) {
+    // Check if this topic ends with "/_action/status"
+    if ( name.size() > status_suffix.size() &&
+         name.compare( name.size() - status_suffix.size(), status_suffix.size(), status_suffix ) ==
+             0 ) {
+      // Extract the action name by removing the suffix
+      std::string action_name = name.substr( 0, name.size() - status_suffix.size() );
+
+      // Try to infer action type from the goal topic
+      std::string goal_topic = action_name + "/_action/send_goal";
+      std::vector<std::string> action_types;
+
+      auto goal_it = topic_map.find( goal_topic );
+      if ( goal_it != topic_map.end() && !goal_it->second.empty() ) {
+        // The goal service type is something like "example_interfaces/action/Fibonacci_SendGoal"
+        // We want to extract "example_interfaces/action/Fibonacci"
+        for ( const auto &type : goal_it->second ) {
+          auto pos = type.rfind( "_SendGoal" );
+          if ( pos != std::string::npos ) {
+            action_types.push_back( type.substr( 0, pos ) );
+          } else {
+            action_types.push_back( type );
+          }
+        }
+      }
+
+      actions.push_back( { action_name, action_types } );
+    }
+  }
+
+  return actions;
+}
+
+// =============================================================================
+// Suggestion Generation Functions
+// =============================================================================
+
+/// @brief Generate suggestions for similar topics.
+///
+/// @param node The node to use for graph introspection
+/// @param searched_topic The topic name that was searched for
+/// @param searched_type The message type that was searched for (optional)
+/// @param max_suggestions Maximum number of suggestions to return
+/// @return Vector of Suggestion sorted by similarity (best matches first)
+inline std::vector<Suggestion> suggest_similar_topics( const rclcpp::Node::SharedPtr &node,
+                                                       const std::string &searched_topic,
+                                                       const std::string &searched_type = "",
+                                                       size_t max_suggestions = 10 )
+{
+  auto topics = collect_available_topics( node );
+  std::vector<Suggestion> suggestions;
+  suggestions.reserve( topics.size() );
+
+  std::vector<std::string> searched_types;
+  if ( !searched_type.empty() ) {
+    searched_types.push_back( searched_type );
+  }
+
+  for ( const auto &topic : topics ) {
+    double score =
+        detail::compute_similarity( searched_topic, topic.name, searched_types, topic.types );
+    suggestions.push_back( { topic.name, topic.types, score } );
+  }
+
+  // Sort by similarity score (descending)
+  std::sort( suggestions.begin(), suggestions.end() );
+
+  // Limit to max_suggestions
+  if ( suggestions.size() > max_suggestions ) {
+    suggestions.resize( max_suggestions );
+  }
+
+  return suggestions;
+}
+
+/// @brief Generate suggestions for similar services.
+///
+/// @param node The node to use for graph introspection
+/// @param searched_service The service name that was searched for
+/// @param searched_type The service type that was searched for (optional)
+/// @param max_suggestions Maximum number of suggestions to return
+/// @return Vector of Suggestion sorted by similarity (best matches first)
+inline std::vector<Suggestion> suggest_similar_services( const rclcpp::Node::SharedPtr &node,
+                                                         const std::string &searched_service,
+                                                         const std::string &searched_type = "",
+                                                         size_t max_suggestions = 10 )
+{
+  auto services = collect_available_services( node );
+  std::vector<Suggestion> suggestions;
+  suggestions.reserve( services.size() );
+
+  std::vector<std::string> searched_types;
+  if ( !searched_type.empty() ) {
+    searched_types.push_back( searched_type );
+  }
+
+  for ( const auto &service : services ) {
+    double score =
+        detail::compute_similarity( searched_service, service.name, searched_types, service.types );
+    suggestions.push_back( { service.name, service.types, score } );
+  }
+
+  std::sort( suggestions.begin(), suggestions.end() );
+
+  if ( suggestions.size() > max_suggestions ) {
+    suggestions.resize( max_suggestions );
+  }
+
+  return suggestions;
+}
+
+/// @brief Generate suggestions for similar actions.
+///
+/// @param node The node to use for graph introspection
+/// @param searched_action The action name that was searched for
+/// @param searched_type The action type that was searched for (optional)
+/// @param max_suggestions Maximum number of suggestions to return
+/// @return Vector of Suggestion sorted by similarity (best matches first)
+inline std::vector<Suggestion> suggest_similar_actions( const rclcpp::Node::SharedPtr &node,
+                                                        const std::string &searched_action,
+                                                        const std::string &searched_type = "",
+                                                        size_t max_suggestions = 10 )
+{
+  auto actions = collect_available_actions( node );
+  std::vector<Suggestion> suggestions;
+  suggestions.reserve( actions.size() );
+
+  std::vector<std::string> searched_types;
+  if ( !searched_type.empty() ) {
+    searched_types.push_back( searched_type );
+  }
+
+  for ( const auto &action : actions ) {
+    double score =
+        detail::compute_similarity( searched_action, action.name, searched_types, action.types );
+    suggestions.push_back( { action.name, action.types, score } );
+  }
+
+  std::sort( suggestions.begin(), suggestions.end() );
+
+  if ( suggestions.size() > max_suggestions ) {
+    suggestions.resize( max_suggestions );
+  }
+
+  return suggestions;
+}
 
 // =============================================================================
 // Context Helper
@@ -260,7 +715,7 @@ public:
   /// @brief Construct a new Test Publisher object.
   TestPublisher( rclcpp::Node::SharedPtr node, const std::string &topic,
                  const rclcpp::QoS &qos = rclcpp::QoS( rclcpp::KeepLast( 10 ) ) )
-      : topic_( topic )
+      : node_( node ), topic_( topic )
   {
     pub_ = node->create_publisher<MsgT>( topic, qos );
   }
@@ -273,12 +728,48 @@ public:
   std::string get_type() const override { return "Publisher"; }
 
   /// @brief Wait until at least one subscription is connected.
+  ///
+  /// On timeout, logs suggestions for similar topics that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @return true if a subscription connected, false on timeout.
   bool wait_for_subscription( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    return exec.spin_until( [this]() { return is_connected(); }, timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_subscription( exec, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait until at least one subscription is connected, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar topics that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if a subscription connected, false on timeout.
+  bool wait_for_subscription( TestExecutor &exec, std::chrono::nanoseconds timeout,
+                              WaitFailureInfo &failure_info )
+  {
+    const bool success = exec.spin_until( [this]() { return is_connected(); }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = topic_;
+      failure_info.searched_type = detail::get_type_name<MsgT>();
+      failure_info.entity_kind = "topic";
+      failure_info.suggestions = suggest_similar_topics( node_, topic_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
 private:
+  rclcpp::Node::SharedPtr node_;
   typename rclcpp::Publisher<MsgT>::SharedPtr pub_;
   std::string topic_;
 };
@@ -294,7 +785,7 @@ public:
   TestSubscription( const rclcpp::Node::SharedPtr &node, const std::string &topic,
                     const rclcpp::QoS &qos = rclcpp::QoS( rclcpp::KeepLast( 10 ) ),
                     bool latched = false )
-      : topic_( topic )
+      : node_( node ), topic_( topic )
   {
     rclcpp::QoS resolved_qos = qos;
     if ( latched )
@@ -342,14 +833,52 @@ public:
   }
 
   /// @brief Wait until at least 'count' publishers are connected.
+  ///
+  /// On timeout, logs suggestions for similar topics that exist in the ROS graph.
+  ///
+  /// @param executor The executor to spin.
+  /// @param count Minimum number of publishers required.
+  /// @param timeout Maximum wait time.
+  /// @return true if enough publishers connected, false on timeout.
   bool wait_for_publishers( TestExecutor &executor, size_t count = 1,
                             std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    return executor.spin_until( [this, count]() { return sub_->get_publisher_count() >= count; },
-                                timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_publishers( executor, count, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait until at least 'count' publishers are connected, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar topics that exist in the ROS graph.
+  ///
+  /// @param executor The executor to spin.
+  /// @param count Minimum number of publishers required.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if enough publishers connected, false on timeout.
+  bool wait_for_publishers( TestExecutor &executor, size_t count, std::chrono::nanoseconds timeout,
+                            WaitFailureInfo &failure_info )
+  {
+    const bool success = executor.spin_until(
+        [this, count]() { return sub_->get_publisher_count() >= count; }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = topic_;
+      failure_info.searched_type = detail::get_type_name<MsgT>();
+      failure_info.entity_kind = "topic";
+      failure_info.suggestions = suggest_similar_topics( node_, topic_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
   /// @brief Wait for a message to arrive, optionally matching a predicate.
+  /// @param executor The executor to spin.
   /// @param timeout Maximum wait time.
   /// @param predicate Optional function to filter messages.
   /// @return true if a matching message arrived, false on timeout.
@@ -390,6 +919,7 @@ public:
   }
 
 private:
+  rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::Subscription<MsgT>> sub_;
   std::string topic_;
   mutable std::mutex mutex_;
@@ -404,7 +934,7 @@ class TestClient : public Connectable
 public:
   /// @brief Construct a new Test Client object.
   TestClient( rclcpp::Node::SharedPtr node, const std::string &service_name )
-      : service_name_( service_name )
+      : node_( node ), service_name_( service_name )
   {
     client_ = node->create_client<ServiceT>( service_name );
   }
@@ -417,13 +947,49 @@ public:
   typename rclcpp::Client<ServiceT>::SharedPtr get() { return client_; }
 
   /// @brief Wait for the service to be available.
+  ///
+  /// On timeout, logs suggestions for similar services that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @return true if the service became available, false on timeout.
   bool wait_for_service( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    // client->wait_for_service is blocking, so we use spin_until with non-blocking check
-    return exec.spin_until( [this]() { return client_->service_is_ready(); }, timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_service( exec, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait for the service to be available, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar services that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if the service became available, false on timeout.
+  bool wait_for_service( TestExecutor &exec, std::chrono::nanoseconds timeout,
+                         WaitFailureInfo &failure_info )
+  {
+    const bool success = exec.spin_until( [this]() { return client_->service_is_ready(); }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = service_name_;
+      failure_info.searched_type = detail::get_type_name<ServiceT>();
+      failure_info.entity_kind = "service";
+      failure_info.suggestions =
+          suggest_similar_services( node_, service_name_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
 private:
+  rclcpp::Node::SharedPtr node_;
   typename rclcpp::Client<ServiceT>::SharedPtr client_;
   std::string service_name_;
 };
@@ -435,7 +1001,7 @@ class TestActionClient : public Connectable
 public:
   /// @brief Construct a new Test Action Client object.
   TestActionClient( rclcpp::Node::SharedPtr node, const std::string &action_name )
-      : action_name_( action_name )
+      : node_( node ), action_name_( action_name )
   {
     client_ = rclcpp_action::create_client<ActionT>( node, action_name );
   }
@@ -448,12 +1014,50 @@ public:
   typename rclcpp_action::Client<ActionT>::SharedPtr get() { return client_; }
 
   /// @brief Wait for the action server to be available.
+  ///
+  /// On timeout, logs suggestions for similar actions that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @return true if the action server became available, false on timeout.
   bool wait_for_server( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    return exec.spin_until( [this]() { return client_->action_server_is_ready(); }, timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_server( exec, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait for the action server to be available, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar actions that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if the action server became available, false on timeout.
+  bool wait_for_server( TestExecutor &exec, std::chrono::nanoseconds timeout,
+                        WaitFailureInfo &failure_info )
+  {
+    const bool success =
+        exec.spin_until( [this]() { return client_->action_server_is_ready(); }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = action_name_;
+      failure_info.searched_type = detail::get_type_name<ActionT>();
+      failure_info.entity_kind = "action";
+      failure_info.suggestions =
+          suggest_similar_actions( node_, action_name_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
 private:
+  rclcpp::Node::SharedPtr node_;
   typename rclcpp_action::Client<ActionT>::SharedPtr client_;
   std::string action_name_;
 };
@@ -479,9 +1083,45 @@ public:
   std::string get_type() const override { return "Service Server"; }
 
   /// @brief Wait for at least one client to connect.
+  ///
+  /// On timeout, logs suggestions for similar services that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @return true if a client connected, false on timeout.
   bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    return exec.spin_until( [this]() { return is_connected(); }, timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_client( exec, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait for at least one client to connect, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar services that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if a client connected, false on timeout.
+  bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout,
+                        WaitFailureInfo &failure_info )
+  {
+    const bool success = exec.spin_until( [this]() { return is_connected(); }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = service_name_;
+      failure_info.searched_type = detail::get_type_name<ServiceT>();
+      failure_info.entity_kind = "service";
+      failure_info.suggestions =
+          suggest_similar_services( node_, service_name_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
   /// @brief Get the underlying ROS service.
@@ -525,9 +1165,45 @@ public:
   std::string get_type() const override { return "Action Server"; }
 
   /// @brief Wait for at least one client to connect.
+  ///
+  /// On timeout, logs suggestions for similar actions that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @return true if a client connected, false on timeout.
   bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout = kDefaultTimeout )
   {
-    return exec.spin_until( [this]() { return is_connected(); }, timeout );
+    WaitFailureInfo failure_info;
+    const bool success = wait_for_client( exec, timeout, failure_info );
+    if ( !success ) {
+      RCLCPP_ERROR( node_->get_logger(), "%s", failure_info.format( kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait for at least one client to connect, with failure info on timeout.
+  ///
+  /// If the wait times out, this method populates the failure_info with suggestions
+  /// for similar actions that exist in the ROS graph.
+  ///
+  /// @param exec The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_info Reference to receive failure information if wait times out.
+  /// @return true if a client connected, false on timeout.
+  bool wait_for_client( TestExecutor &exec, std::chrono::nanoseconds timeout,
+                        WaitFailureInfo &failure_info )
+  {
+    const bool success = exec.spin_until( [this]() { return is_connected(); }, timeout );
+
+    if ( !success ) {
+      failure_info.searched_name = action_name_;
+      failure_info.searched_type = detail::get_type_name<ActionT>();
+      failure_info.entity_kind = "action";
+      failure_info.suggestions =
+          suggest_similar_actions( node_, action_name_, failure_info.searched_type );
+    }
+
+    return success;
   }
 
   /// @brief Get the underlying ROS action server.
@@ -636,68 +1312,109 @@ public:
   /// @brief Wait for all registered connectables to establish connections.
   ///
   /// Monitors all created test wrappers (publishers, subscribers, etc.) and waits until
-  /// their `is_connected()` returns true.
+  /// their `is_connected()` returns true. On timeout, logs suggestions for similar entities.
   ///
   /// @param executor The executor to spin.
   /// @param timeout Maximum wait time.
-  /// @param pending_report Optional pointer to string to receive pending connection details on failure.
   /// @return true if all connected, false on timeout.
   bool wait_for_all_connections( TestExecutor &executor,
-                                 std::chrono::seconds timeout = std::chrono::seconds( 10 ),
-                                 std::string *pending_report = nullptr )
+                                 std::chrono::seconds timeout = std::chrono::seconds( 10 ) )
+  {
+    std::vector<WaitFailureInfo> failure_infos;
+    const bool success = wait_for_all_connections( executor, timeout, failure_infos );
+    if ( !success ) {
+      RCLCPP_ERROR( this->get_logger(), "%s",
+                    format_failure_infos( failure_infos, kDefaultMaxSuggestions ).c_str() );
+    }
+    return success;
+  }
+
+  /// @brief Wait for all registered connectables to establish connections, with detailed failure info.
+  ///
+  /// This overload provides detailed suggestions for each failed connection, helping
+  /// identify similar entities in the ROS graph that might be what the user intended.
+  ///
+  /// @param executor The executor to spin.
+  /// @param timeout Maximum wait time.
+  /// @param failure_infos Reference to vector to receive failure information for each disconnected item.
+  /// @return true if all connected, false on timeout.
+  bool wait_for_all_connections( TestExecutor &executor, std::chrono::seconds timeout,
+                                 std::vector<WaitFailureInfo> &failure_infos )
   {
     auto last_print = std::chrono::steady_clock::now();
 
-    auto collect_disconnected = [&]() {
-      std::vector<std::string> disconnected_names;
+    auto collect_disconnected_items = [&]() {
+      std::vector<std::shared_ptr<Connectable>> disconnected;
       for ( const auto &item : registry_ ) {
         if ( !item->is_connected() ) {
-          disconnected_names.push_back( item->get_type() + ": " + item->get_name() );
+          disconnected.push_back( item );
         }
       }
-      return disconnected_names;
-    };
-
-    auto format_pending = []( const std::vector<std::string> &names ) {
-      std::stringstream ss;
-      ss << "Waiting for connections (" << names.size() << " pending): ";
-      for ( const auto &name : names ) ss << "[" << name << "] ";
-      return ss.str();
+      return disconnected;
     };
 
     const bool ok = executor.spin_until(
         [&]() {
-          auto disconnected_names = collect_disconnected();
-          const bool all_connected = disconnected_names.empty();
+          auto disconnected = collect_disconnected_items();
+          const bool all_connected = disconnected.empty();
 
           // Print status every 2 seconds if waiting
           auto now = std::chrono::steady_clock::now();
           if ( !all_connected && ( now - last_print ) > 2s ) {
-            const auto message = format_pending( disconnected_names );
-            RCLCPP_WARN( this->get_logger(), "%s", message.c_str() );
+            std::stringstream ss;
+            ss << "Waiting for connections (" << disconnected.size() << " pending): ";
+            for ( const auto &item : disconnected ) {
+              ss << "[" << item->get_type() << ": " << item->get_name() << "] ";
+            }
+            RCLCPP_WARN( this->get_logger(), "%s", ss.str().c_str() );
             last_print = now;
           }
           return all_connected;
         },
         timeout );
 
-    if ( !ok && pending_report == nullptr ) {
-      // If no report pointer was provided, log the failure details here
-      const auto disconnected_names = collect_disconnected();
-      RCLCPP_ERROR( this->get_logger(), "Timeout waiting for connections! %s",
-                    format_pending( disconnected_names ).c_str() );
-    }
+    if ( !ok ) {
+      failure_infos.clear();
+      auto disconnected = collect_disconnected_items();
 
-    if ( pending_report ) {
-      if ( ok ) {
-        pending_report->clear();
-      } else {
-        const auto disconnected_names = collect_disconnected();
-        *pending_report = format_pending( disconnected_names );
+      for ( const auto &item : disconnected ) {
+        WaitFailureInfo info;
+        info.searched_name = item->get_name();
+        info.searched_type = ""; // Type info not available through Connectable interface
+
+        const std::string type = item->get_type();
+        if ( type == "Publisher" || type == "Subscription" ) {
+          info.entity_kind = "topic";
+          info.suggestions = suggest_similar_topics( shared_from_this(), item->get_name() );
+        } else if ( type == "Service Client" || type == "Service Server" ) {
+          info.entity_kind = "service";
+          info.suggestions = suggest_similar_services( shared_from_this(), item->get_name() );
+        } else if ( type == "Action Client" || type == "Action Server" ) {
+          info.entity_kind = "action";
+          info.suggestions = suggest_similar_actions( shared_from_this(), item->get_name() );
+        } else {
+          info.entity_kind = "unknown";
+        }
+
+        failure_infos.push_back( std::move( info ) );
       }
     }
 
     return ok;
+  }
+
+  /// @brief Format a vector of WaitFailureInfo into a human-readable string.
+  ///
+  /// @param failure_infos The failure information to format.
+  /// @param max_suggestions Maximum suggestions per failure (0 = unlimited).
+  /// @return A formatted string with all failure details and suggestions.
+  [[nodiscard]] static std::string
+  format_failure_infos( const std::vector<WaitFailureInfo> &failure_infos, size_t max_suggestions = 0 )
+  {
+    std::stringstream ss;
+    ss << "Connection failures (" << failure_infos.size() << " items):\n";
+    for ( const auto &info : failure_infos ) { ss << info.format( max_suggestions ) << "\n"; }
+    return ss.str();
   }
 
 private:

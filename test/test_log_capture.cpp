@@ -74,12 +74,12 @@ TEST_F( ConnectWarningTest, WaitForAllConnectionsWarnings )
   auto pub = tester_node_->create_test_publisher<std_msgs::msg::String>( topic );
 
   // Capture logs while waiting - should timeout and log ERROR
-  // Using 1s timeout
+  // Using 3s timeout
   bool result = tester_node_->wait_for_all_connections( *executor_, std::chrono::seconds( 3 ) );
 
   EXPECT_FALSE( result );
-  // It should have logged "Timeout waiting for connections"
-  EXPECT_TRUE( capture.has_log( "Timeout waiting for connections" ) );
-  EXPECT_TRUE( capture.has_log( "Publisher: /logging_test_topic" ) );
+  // It should have logged "Connection failures" with the topic name
+  EXPECT_TRUE( capture.has_log( "Connection failures" ) );
+  EXPECT_TRUE( capture.has_log( "/logging_test_topic" ) );
   EXPECT_FALSE( capture.has_log( "Subscriber: /does_not_exist" ) );
 }

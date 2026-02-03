@@ -180,11 +180,11 @@ TEST_F( HectorTestFixture, ConnectionDiagnostics )
   auto pub = tester_node_->create_test_publisher<std_msgs::msg::Int32>( topic );
   auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>( topic );
 
-  std::string diagnostic_report;
-  bool result = tester_node_->wait_for_all_connections( *executor_, 5s, &diagnostic_report );
+  std::vector<hector_testing_utils::WaitFailureInfo> failure_infos;
+  bool result = tester_node_->wait_for_all_connections( *executor_, 5s, failure_infos );
 
   ASSERT_TRUE( result );
-  EXPECT_TRUE( diagnostic_report.empty() ); // Should be empty on success
+  EXPECT_TRUE( failure_infos.empty() ); // Should be empty on success
 }
 
 // Test helper functions for waiting on publishers and subscribers
