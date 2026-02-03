@@ -538,11 +538,23 @@ TEST_F( HectorTestFixture, WaitFailureInfoFormat )
   info.searched_name = "/my/missing/topic";
   info.searched_type = "std_msgs/msg/Int32";
   info.entity_kind = "topic";
-  info.suggestions = {
-      { "/my/existing/topic", { "std_msgs/msg/Int32" }, 0.85 },
-      { "/my/other/topic", { "std_msgs/msg/String" }, 0.70 },
-      { "/different/topic", { "std_msgs/msg/Int32" }, 0.50 },
-  };
+
+  hector_testing_utils::Suggestion s1;
+  s1.name = "/my/existing/topic";
+  s1.types = { "std_msgs/msg/Int32" };
+  s1.similarity_score = 0.85;
+
+  hector_testing_utils::Suggestion s2;
+  s2.name = "/my/other/topic";
+  s2.types = { "std_msgs/msg/String" };
+  s2.similarity_score = 0.70;
+
+  hector_testing_utils::Suggestion s3;
+  s3.name = "/different/topic";
+  s3.types = { "std_msgs/msg/Int32" };
+  s3.similarity_score = 0.50;
+
+  info.suggestions = { s1, s2, s3 };
 
   std::string formatted = info.format();
 

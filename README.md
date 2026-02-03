@@ -62,6 +62,32 @@ if(BUILD_TESTING)
 endif()
 ```
 
+### Modular Headers
+
+The library is organized into modular headers. You can include the main header for full functionality:
+
+```cpp
+#include <hector_testing_utils/hector_testing_utils.hpp>  // Includes everything
+```
+
+Or include individual headers for finer-grained control:
+
+```cpp
+#include <hector_testing_utils/constants.hpp>           // kDefaultTimeout, kDefaultSpinPeriod
+#include <hector_testing_utils/test_executor.hpp>       // TestExecutor
+#include <hector_testing_utils/test_wrappers.hpp>       // TestPublisher, TestSubscription, etc.
+#include <hector_testing_utils/test_node.hpp>           // TestNode
+#include <hector_testing_utils/test_fixtures.hpp>       // HectorTestFixture
+#include <hector_testing_utils/graph_introspection.hpp> // Suggestion generation
+#include <hector_testing_utils/qos_helpers.hpp>         // QoS validation & diagnostics
+#include <hector_testing_utils/graph_monitor.hpp>       // Graph change monitoring
+#include <hector_testing_utils/parameter_helpers.hpp>   // Remote parameter manipulation
+#include <hector_testing_utils/log_capture.hpp>         // LogCapture
+#include <hector_testing_utils/assertions.hpp>          // ASSERT_SERVICE_EXISTS, etc.
+#include <hector_testing_utils/wait_helpers.hpp>        // call_service, call_action
+#include <hector_testing_utils/test_context.hpp>        // TestContext
+```
+
 ## What is included
 
 ### Core Components
@@ -92,6 +118,50 @@ endif()
 * `call_service`: Call a service with automatic waiting and timeout handling
 * `call_action`: Send an action goal with automatic waiting and result retrieval
 * `wait_for_all_connections`: Wait for all entities to be connected
+
+### Graph Introspection & Suggestions
+
+When a wait operation times out, the library automatically provides **suggestions for similar entities** in the ROS graph. This helps debug test failures by showing what's actually available:
+
+* `collect_available_topics`: Get all topics in the ROS graph
+* `collect_available_services`: Get all services in the ROS graph
+* `collect_available_actions`: Get all actions in the ROS graph
+* `suggest_similar_topics`: Find topics similar to a given name (using Levenshtein distance)
+* `suggest_similar_services`: Find services similar to a given name
+* `suggest_similar_actions`: Find actions similar to a given name
+
+### QoS Validation & Diagnostics
+
+Diagnose QoS incompatibilities that can cause silent connection failures:
+
+* `QoSInfo`: Struct representing QoS settings with human-readable formatting
+* `check_qos_compatibility`: Check if publisher/subscriber QoS settings are compatible
+* `get_publishers_info` / `get_subscribers_info`: Get QoS info for all endpoints on a topic
+* `diagnose_topic_qos`: Generate a full diagnostic report for a topic
+* `get_topic_qos_summary`: Get a compact QoS summary string
+* `get_qos_compatibility_hint`: Get a hint about QoS incompatibilities
+
+### Graph Change Monitoring
+
+Monitor the ROS graph for changes (nodes, topics, services appearing/disappearing):
+
+* `GraphMonitor`: Class for tracking graph changes over time
+* `wait_for_node` / `wait_for_node_removed`: Wait for nodes to appear or disappear
+* `wait_for_topic` / `wait_for_topic_removed`: Wait for topics to appear or disappear
+* `wait_for_service` / `wait_for_service_removed`: Wait for services to appear or disappear
+* `has_node` / `has_topic` / `has_service`: Query current graph state
+* `get_changes` / `get_changes_since`: Get recorded graph changes
+
+### Remote Parameter Manipulation
+
+Set and get parameters on other nodes during testing:
+
+* `RemoteParameterClient`: Client for manipulating parameters on remote nodes
+* `set_parameter<T>`: Set a parameter with automatic type inference
+* `get_parameter<T>`: Get a parameter with type conversion
+* `list_parameters`: List all parameters on a remote node
+* `has_parameter`: Check if a parameter exists
+* `set_remote_parameter` / `get_remote_parameter`: Convenience functions
 
 ### Assertions & Macros
 
@@ -370,9 +440,58 @@ TEST_F(HectorTestFixture, LatchedMessage)
 }
 ```
 
-## Connection Diagnostics
+## Connection Diagnostics & Auto-Suggestions
 
-Get diagnostic information about pending connections:
+When a wait operation times out, the library **automatically logs suggestions** showing similar entities in the ROS graph. This is helpful for debugging why tests aren't working - often due to incorrect namespaces, topic/service names or missing nodes.
+
+### Automatic Suggestions on Timeout
+
+All `wait_for_*` functions automatically log helpful suggestions when they timeout:
+
+```cpp
+TEST_F(HectorTestFixture, AutoSuggestionExample)
+{
+  // Typo in topic name: "temperatur" instead of "temperature"
+  auto sub = tester_node_->create_test_subscription<std_msgs::msg::Float32>("/sensor/temperatur");
+
+  // This will timeout and automatically log suggestions like:
+  // [ERROR] Failed to find topic '/sensor/temperatur'
+  //   Available topics (sorted by similarity):
+  //     - /sensor/temperature [std_msgs/msg/Float32] (score: 0.95)
+  //     - /sensor/pressure [std_msgs/msg/Float32] (score: 0.42)
+  //     - /rosout [rcl_interfaces/msg/Log] (score: 0.18)
+  sub->wait_for_publishers(*executor_, 1, 2s);
+}
+```
+
+### Detailed Failure Information
+
+For programmatic access to failure details, use the overloads that accept a `WaitFailureInfo` reference:
+
+```cpp
+TEST_F(HectorTestFixture, DetailedFailureInfo)
+{
+  auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>("/my_topic");
+
+  hector_testing_utils::WaitFailureInfo failure_info;
+  bool connected = sub->wait_for_publishers(*executor_, 1, 2s, failure_info);
+
+  if (!connected) {
+    // Access structured failure information
+    std::cout << "Searched for: " << failure_info.searched_name << "\n";
+    std::cout << "Entity kind: " << failure_info.entity_kind << "\n";
+
+    for (const auto& suggestion : failure_info.suggestions) {
+      std::cout << "  Similar: " << suggestion.name
+                << " (score: " << suggestion.similarity_score << ")\n";
+    }
+  }
+}
+```
+
+### Connection Diagnostics for Multiple Entities
+
+For `wait_for_all_connections`, use a vector of `WaitFailureInfo`:
 
 ```cpp
 TEST_F(HectorTestFixture, ConnectionDiagnostics)
@@ -380,13 +499,169 @@ TEST_F(HectorTestFixture, ConnectionDiagnostics)
   auto pub = tester_node_->create_test_publisher<std_msgs::msg::Int32>("/topic");
   auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>("/topic");
 
-  std::string diagnostic_report;
-  bool connected = tester_node_->wait_for_all_connections(*executor_, 5s, &diagnostic_report);
+  std::vector<hector_testing_utils::WaitFailureInfo> failure_infos;
+  bool connected = tester_node_->wait_for_all_connections(*executor_, 5s, failure_infos);
 
   if (!connected) {
-    RCLCPP_ERROR(tester_node_->get_logger(), "Failed to connect: %s", diagnostic_report.c_str());
+    // Format all failures into a readable string
+    std::string report = hector_testing_utils::TestNode::format_failure_infos(failure_infos);
+    RCLCPP_ERROR(tester_node_->get_logger(), "Failed to connect:\n%s", report.c_str());
   }
   ASSERT_TRUE(connected);
+}
+```
+
+## QoS Diagnostics
+
+When wait operations timeout, suggestions include **QoS information** to help diagnose silent connection failures caused by incompatible QoS settings:
+
+```cpp
+TEST_F(HectorTestFixture, QoSDiagnosticsExample)
+{
+  // Create a subscriber with RELIABLE QoS
+  rclcpp::QoS sub_qos(10);
+  sub_qos.reliable();
+
+  auto sub = tester_node_->create_test_subscription<std_msgs::msg::Int32>(
+    "/sensor/data", sub_qos);
+
+  // If a publisher exists with BEST_EFFORT QoS, the timeout message will show:
+  // [ERROR] Failed to find topic '/sensor/data'
+  //   Available topics (sorted by similarity):
+  //     - /sensor/data [std_msgs/msg/Int32] (score: 1.00) [QoS INCOMPATIBLE]
+  //       QoS: pubs: reliability=BEST_EFFORT, durability=VOLATILE, history=KEEP_LAST(10)
+  sub->wait_for_publishers(*executor_, 1, 2s);
+}
+```
+
+You can also diagnose QoS issues programmatically:
+
+```cpp
+TEST_F(HectorTestFixture, QoSDiagnosticReport)
+{
+  // Get a full diagnostic report for a topic
+  std::string diagnosis = hector_testing_utils::diagnose_topic_qos(
+    tester_node_, "/my_topic");
+  std::cout << diagnosis;
+
+  // Check compatibility before creating endpoints
+  rclcpp::QoS my_qos(10);
+  my_qos.reliable();
+
+  auto result = hector_testing_utils::check_topic_qos_compatibility(
+    tester_node_, "/my_topic", my_qos, false /* is_subscriber */);
+
+  if (!result.compatible) {
+    for (const auto& error : result.errors) {
+      std::cerr << "QoS Error: " << error << "\n";
+    }
+  }
+}
+```
+
+## Graph Change Monitoring
+
+Monitor the ROS graph for nodes, topics, and services appearing or disappearing:
+
+```cpp
+TEST_F(HectorTestFixture, GraphMonitorExample)
+{
+  hector_testing_utils::GraphMonitor monitor(tester_node_);
+  monitor.start();
+
+  // Wait for a specific node to appear
+  bool found = monitor.wait_for_node(*executor_, "/my_node", 5s);
+  EXPECT_TRUE(found);
+
+  // Wait for a topic to be created
+  found = monitor.wait_for_topic(*executor_, "/my_topic", 5s);
+  EXPECT_TRUE(found);
+
+  // Query current graph state
+  EXPECT_TRUE(monitor.has_node("/my_node"));
+  EXPECT_TRUE(monitor.has_topic("/my_topic"));
+
+  // Get all recorded changes
+  auto changes = monitor.get_changes();
+  for (const auto& change : changes) {
+    std::cout << change.format() << "\n";
+  }
+
+  monitor.stop();
+}
+```
+
+You can also set up callbacks for change notifications:
+
+```cpp
+TEST_F(HectorTestFixture, GraphMonitorCallback)
+{
+  hector_testing_utils::GraphMonitor monitor(tester_node_);
+
+  monitor.set_change_callback([](const hector_testing_utils::GraphChange& change) {
+    std::cout << "Graph changed: " << change.format() << "\n";
+  });
+
+  monitor.start();
+
+  // Changes will now trigger the callback
+  auto pub = tester_node_->create_publisher<std_msgs::msg::Int32>("/new_topic", 10);
+  monitor.wait_for_any_change(*executor_, 2s);
+
+  monitor.stop();
+}
+```
+
+## Remote Parameter Manipulation
+
+Set and get parameters on other nodes during testing:
+
+```cpp
+TEST_F(HectorTestFixture, RemoteParameterExample)
+{
+  // Create a node with parameters to manipulate
+  auto target_node = std::make_shared<rclcpp::Node>("target_node");
+  target_node->declare_parameter("my_param", 42);
+  target_node->declare_parameter("my_string", "hello");
+  executor_->add_node(target_node);
+
+  // Create a parameter client for the target node
+  hector_testing_utils::RemoteParameterClient params(tester_node_, "target_node");
+  ASSERT_TRUE(params.wait_for_service(*executor_, 5s));
+
+  // Get a parameter
+  auto value = params.get_parameter<int>(*executor_, "my_param");
+  ASSERT_TRUE(value.has_value());
+  EXPECT_EQ(value.value(), 42);
+
+  // Set a parameter
+  auto result = params.set_parameter(*executor_, "my_param", 100);
+  EXPECT_TRUE(result.success);
+
+  // Verify the change
+  value = params.get_parameter<int>(*executor_, "my_param");
+  EXPECT_EQ(value.value(), 100);
+
+  // List all parameters
+  auto param_names = params.list_parameters(*executor_);
+  EXPECT_TRUE(params.has_parameter(*executor_, "my_param"));
+}
+```
+
+Convenience functions for one-off operations:
+
+```cpp
+TEST_F(HectorTestFixture, RemoteParameterConvenience)
+{
+  // Set a parameter on a remote node
+  auto result = hector_testing_utils::set_remote_parameter(
+    tester_node_, "target_node", "config_value", 3.14, *executor_);
+  EXPECT_TRUE(result.success);
+
+  // Get a parameter from a remote node
+  auto value = hector_testing_utils::get_remote_parameter<double>(
+    tester_node_, "target_node", "config_value", *executor_);
+  EXPECT_DOUBLE_EQ(value.value(), 3.14);
 }
 ```
 
@@ -529,12 +804,16 @@ EXPECT_EQ(result->code, rclcpp_action::ResultCode::SUCCEEDED);
 3. **Use predicates**: Filter messages with predicates instead of checking values in a loop
 4. **Set appropriate timeouts**: Use longer timeouts on CI systems; prefer waiting over sleeping
 5. **Reset subscriptions**: Call `reset()` on subscriptions between test phases to clear cached messages
-6. **Check diagnostics**: Use the diagnostic report parameter to debug connection issues
+6. **Check auto-suggestions on timeout**: When a wait times out, look at the logged suggestions - they show similar entities that exist in the graph, helping catch typos and misconfiguration
 7. **Isolate contexts**: Use `HectorTestFixtureWithContext` when running tests in shared processes
 8. **Match QoS policies**: Ensure publishers and subscribers use compatible QoS settings (reliability, durability) to avoid silent connection failures
 9. **Use `wait_for_new_message()`**: When you need to wait for the next message regardless of content
 10. **Leverage timing helpers**: Use the built-in timing and sequencing helpers for robust, deterministic tests
 11. **Domain ID Isolation**: When running tests in parallel on the same machine, ensure your test fixture handles Domain ID isolation if you are not using `TestContext` (which attempts to handle this). `hector_testing_utils` attempts to generate unique Domain IDs, but be aware of shared DDS limits.
+12. **Use detailed failure info**: For programmatic debugging, use the `WaitFailureInfo` overloads to get structured information about what went wrong
+13. **Check QoS compatibility**: When connections aren't working, use `diagnose_topic_qos()` or check the QoS hints in timeout suggestions - QoS mismatches are a common cause of silent failures
+14. **Use GraphMonitor for dynamic tests**: When testing systems where nodes/topics appear dynamically, use `GraphMonitor` to wait for specific graph states instead of arbitrary sleeps
+15. **Manipulate remote parameters**: Use `RemoteParameterClient` to dynamically configure nodes under test - useful for testing parameter change handlers and different configurations
 
 ### Testing Lifecycle Nodes
 
