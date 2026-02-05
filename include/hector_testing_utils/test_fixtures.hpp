@@ -43,6 +43,11 @@ protected:
 
   void TearDown() override
   {
+    // Clean up nodes and executor before shutdown to avoid
+    // "Finalizing a context with active nodes" errors
+    tester_node_.reset();
+    executor_.reset();
+
     if ( rclcpp::ok() ) {
       rclcpp::shutdown();
     }

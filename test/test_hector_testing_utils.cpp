@@ -131,6 +131,9 @@ TEST_F( HectorTestFixture, ActionClientServerWaitsForConnections )
   ASSERT_NE( wrapped.result, nullptr );
   EXPECT_EQ( wrapped.result->sequence.size(), 5u );
   EXPECT_EQ( wrapped.result->sequence.back(), 3 );
+
+  // Give detached thread time to complete before test cleanup
+  std::this_thread::sleep_for( 50ms );
 }
 
 TEST_F( HectorTestFixture, TestSubscriptionReceivesMessage )
