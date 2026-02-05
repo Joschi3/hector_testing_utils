@@ -1,0 +1,2 @@
+# Documentation dependencies
+rosdoc2
