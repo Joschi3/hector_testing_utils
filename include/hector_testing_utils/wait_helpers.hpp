@@ -84,9 +84,24 @@ bool wait_for_action_server( const typename rclcpp_action::Client<ActionT>::Shar
 // Service Call Helper
 // =============================================================================
 
-/// @brief Options for service calls.
+/// @brief Options for configuring service call behavior.
+///
+/// Use this struct to customize timeouts when calling services.
+///
+/// Example:
+/// @code
+///   ServiceCallOptions options;
+///   options.service_timeout = std::chrono::seconds(10);  // Wait longer for service
+///   options.response_timeout = std::chrono::seconds(30); // Wait longer for response
+///   auto response = call_service<MySrv>(client, request, executor, options);
+/// @endcode
 struct ServiceCallOptions {
+  /// @brief Maximum time to wait for the service to become available.
+  /// If the service is not ready within this time, call_service returns nullptr.
   std::chrono::nanoseconds service_timeout{ kDefaultTimeout };
+
+  /// @brief Maximum time to wait for the service response after sending the request.
+  /// If the response is not received within this time, call_service returns nullptr.
   std::chrono::nanoseconds response_timeout{ kDefaultTimeout };
 };
 
@@ -117,10 +132,31 @@ call_service( const typename rclcpp::Client<ServiceT>::SharedPtr &client,
 // Action Call Helper
 // =============================================================================
 
-/// @brief Options for action calls.
+/// @brief Options for configuring action call behavior.
+///
+/// Use this struct to customize timeouts when calling actions.
+/// Actions have three phases: server discovery, goal acceptance, and result waiting.
+///
+/// Example:
+/// @code
+///   ActionCallOptions options;
+///   options.server_timeout = std::chrono::seconds(10);  // Wait for server
+///   options.goal_timeout = std::chrono::seconds(5);     // Wait for goal acceptance
+///   options.result_timeout = std::chrono::minutes(5);   // Wait for long-running action
+///   auto result = call_action<MyAction>(client, goal, executor, options);
+/// @endcode
 struct ActionCallOptions {
+  /// @brief Maximum time to wait for the action server to become available.
+  /// If the server is not ready within this time, call_action returns nullopt.
   std::chrono::nanoseconds server_timeout{ kDefaultTimeout };
+
+  /// @brief Maximum time to wait for the goal to be accepted by the server.
+  /// If the goal is not accepted within this time, call_action returns nullopt.
   std::chrono::nanoseconds goal_timeout{ kDefaultTimeout };
+
+  /// @brief Maximum time to wait for the action result after the goal is accepted.
+  /// This should be set based on how long the action is expected to run.
+  /// Default is 30 seconds, but long-running actions may need more.
   std::chrono::nanoseconds result_timeout{ std::chrono::seconds( 30 ) };
 };
 

@@ -1,0 +1,54 @@
+---
+type: rosdoc2 config
+version: 1
+
+---
+settings:
+  # Theme for the generated documentation
+  sphinx_theme: sphinx_rtd_theme
+
+  # Enable markdown support
+  always_run_doxygen: true
+  always_run_sphinx_apidoc: false
+  always_run_exhale: true
+
+builders:
+- doxygen: {}
+- sphinx: {}
+
+doxygen:
+  # Input directories for Doxygen
+  INPUT: include/hector_testing_utils
+
+  # Enable documentation for all members
+  EXTRACT_ALL: YES
+  EXTRACT_PRIVATE: NO
+  EXTRACT_STATIC: YES
+
+  # Generate documentation for undocumented members
+  WARN_IF_UNDOCUMENTED: NO
+
+  # Generate XML output for Breathe/Sphinx integration
+  GENERATE_XML: YES
+  GENERATE_HTML: NO
+
+  # File patterns to include
+  FILE_PATTERNS: '*.hpp *.h'
+
+  # Recursive search
+  RECURSIVE: YES
+
+  # Enable markdown support in comments
+  MARKDOWN_SUPPORT: YES
+
+  # Exclude patterns for test/build directories
+  EXCLUDE_PATTERNS: '*/test/* */.venv/* */docs_build/* */docs_output/* */build/*'
+
+  # Better C++ support
+  ENABLE_PREPROCESSING: YES
+  MACRO_EXPANSION: YES
+  EXPAND_ONLY_PREDEF: NO
+
+  # Project name
+  PROJECT_NAME: hector_testing_utils
+  PROJECT_BRIEF: Helper classes and utilities for writing robust ROS 2 integration tests
