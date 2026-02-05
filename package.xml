@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>hector_testing_utils</name>
@@ -6,10 +6,11 @@
   <description>Helper classes and functions for writing tests in ros2.</description>
 
   <maintainer email="aljoscha.schmidt@tu-darmstadt.de">Aljoscha Schmidt</maintainer>
-  <license>TODO</license>
+  <license>BSD-3-Clause</license>
   <author email="aljoscha.schmidt@tu-darmstadt.de">Aljoscha Schmidt</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>

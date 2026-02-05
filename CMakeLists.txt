@@ -25,6 +25,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 
 add_library(hector_testing_utils INTERFACE)
@@ -33,7 +34,8 @@ target_include_directories(
   INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>)
 
-ament_target_dependencies(hector_testing_utils INTERFACE rclcpp rclcpp_action)
+ament_target_dependencies(hector_testing_utils INTERFACE rclcpp rclcpp_action
+                          rcl_interfaces)
 
 install(TARGETS hector_testing_utils EXPORT export_${PROJECT_NAME})
 
@@ -89,10 +91,29 @@ if(BUILD_TESTING)
   target_link_libraries(test_executor_types hector_testing_utils)
   ament_target_dependencies(test_executor_types rclcpp)
 
+  ament_add_gtest(test_graph_suggestions test/test_graph_suggestions.cpp)
+  target_link_libraries(test_graph_suggestions hector_testing_utils)
+  ament_target_dependencies(test_graph_suggestions rclcpp rclcpp_action
+                            example_interfaces std_msgs)
+
+  ament_add_gtest(test_qos_helpers test/test_qos_helpers.cpp)
+  target_link_libraries(test_qos_helpers hector_testing_utils)
+  ament_target_dependencies(test_qos_helpers rclcpp std_msgs)
+
+  ament_add_gtest(test_graph_monitor test/test_graph_monitor.cpp)
+  target_link_libraries(test_graph_monitor hector_testing_utils)
+  ament_target_dependencies(test_graph_monitor rclcpp rclcpp_action
+                            example_interfaces std_msgs)
+
+  ament_add_gtest(test_parameter_helpers test/test_parameter_helpers.cpp)
+  target_link_libraries(test_parameter_helpers hector_testing_utils)
+  ament_target_dependencies(test_parameter_helpers rclcpp rcl_interfaces
+                            std_msgs)
+
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp rclcpp_action)
+ament_export_dependencies(rclcpp rclcpp_action rcl_interfaces)
 ament_export_include_directories(include)
 
 ament_package()

@@ -163,15 +163,23 @@ TEST_F( HectorTestFixture, WaitForAllConnectionsTimeout )
   // Create a publisher but no subscriber - it won't connect
   auto pub = tester_node_->create_test_publisher<std_msgs::msg::Int32>( topic );
 
-  std::string diagnostic;
+  std::vector<hector_testing_utils::WaitFailureInfo> failure_infos;
   auto start = std::chrono::steady_clock::now();
-  bool result = tester_node_->wait_for_all_connections( *executor_, 1s, &diagnostic );
+  bool result = tester_node_->wait_for_all_connections( *executor_, 1s, failure_infos );
   auto duration = std::chrono::steady_clock::now() - start;
 
   EXPECT_FALSE( result );
   EXPECT_GE( duration, 1s );
-  EXPECT_FALSE( diagnostic.empty() ); // Should contain diagnostic info
-  EXPECT_NE( diagnostic.find( "Publisher" ), std::string::npos );
+  EXPECT_FALSE( failure_infos.empty() ); // Should contain diagnostic info
+  // Check that failure info contains info about the publisher
+  bool found_publisher = false;
+  for ( const auto &info : failure_infos ) {
+    if ( info.searched_name == topic ) {
+      found_publisher = true;
+      EXPECT_EQ( info.entity_kind, "topic" );
+    }
+  }
+  EXPECT_TRUE( found_publisher );
 }
 
 // Test spin_some doesn't block indefinitely
